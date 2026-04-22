@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/integrations/supabase/client';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Download, FileBarChart2, FileText, TrendingUp, Users } from 'lucide-react';
+import { ChevronDown, ChevronUp, Download, FileBarChart2, FileText, TrendingUp, Users } from 'lucide-react';
 import { formatCurrency, profissaoLabel, tipoPlantaoLabel } from '@/lib/format';
 import { PeriodoPicker } from '@/components/PeriodoPicker';
 import { calcPeriodo, periodoInicial, PeriodoState } from '@/lib/periodo';
@@ -25,8 +24,17 @@ interface Sector { id: string; nome: string; hospital_id: string; }
 interface Cooperado { id: string; nome: string; }
 
 type TipoRelatorio = 'faturamento' | 'repasse';
+type Ordenacao = 'nome' | 'valor';
+
+const PROF_COLORS: Record<string, string> = {
+  enfermeiro: '#2B7FE8',
+  tecnico_enfermagem: '#10B981',
+  fonoaudiologo: '#8B72D8',
+  assistente_social: '#F59E0B',
+};
 
 const fmtBRL = (v: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v);
+const fmtData = (s: string) => s.split('-').reverse().join('/');
 
 function downloadCSVFaturamento(rows: LancRow[]) {
   const header = ['Data', 'Cooperado', 'Profissão', 'Tipo', 'Cliente', 'Setor', 'Horas', 'Valor Cliente'];
@@ -43,7 +51,7 @@ function downloadCSVFaturamento(rows: LancRow[]) {
 }
 
 function downloadCSVRepasse(rows: LancRow[]) {
-  const header = ['Data', 'Cooperado', 'Profissão', 'Tipo', 'Cliente', 'Setor', 'Horas', 'Repasse Cooperado'];
+  const header = ['Data', 'Cooperado', 'Profissão', 'Tipo', 'Cliente', 'Setor', 'Horas', 'Repasse'];
   const lines = rows.map(r => [
     r.data_plantao, r.cooperados?.nome ?? '', profissaoLabel[r.profissao] ?? r.profissao,
     tipoPlantaoLabel[r.tipo_plantao] ?? r.tipo_plantao, r.hospitals?.nome ?? '', r.sectors?.nome ?? '',
@@ -56,7 +64,7 @@ function downloadCSVRepasse(rows: LancRow[]) {
   URL.revokeObjectURL(url);
 }
 
-function gerarPDFHeader(doc: jsPDF, titulo: string, subtitulo: string, periodoLabel: string, filtros: Record<string, string>) {
+function gerarPDFHeader(doc: jsPDF, titulo: string, periodoLabel: string, filtros: Record<string, string>) {
   const W = doc.internal.pageSize.getWidth();
   doc.setFillColor(31, 41, 99);
   doc.rect(0, 0, W, 28, 'F');
@@ -72,12 +80,8 @@ function gerarPDFHeader(doc: jsPDF, titulo: string, subtitulo: string, periodoLa
     filtros.hospital && `Cliente: ${filtros.hospital}`,
     filtros.setor && `Setor: ${filtros.setor}`,
   ].filter(Boolean).join('  ');
-  if (filtroTexto) {
-    doc.setFontSize(8); doc.setTextColor(200, 210, 255);
-    doc.text(filtroTexto, 14, 25);
-  }
   doc.setFontSize(8); doc.setTextColor(200, 210, 255);
-  if (!filtroTexto) doc.text(subtitulo, 14, 25);
+  doc.text(filtroTexto || ' ', 14, 25);
 }
 
 function gerarPDFFooter(doc: jsPDF) {
@@ -97,11 +101,10 @@ function gerarPDFFooter(doc: jsPDF) {
 function gerarPDFFaturamento(rows: LancRow[], periodoLabel: string, filtros: Record<string, string>) {
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
   const W = doc.internal.pageSize.getWidth();
-  gerarPDFHeader(doc, 'Relatório de Faturamento', 'Valores cobrados ao cliente', periodoLabel, filtros);
+  gerarPDFHeader(doc, 'Relatório de Faturamento', periodoLabel, filtros);
 
   const totalHoras = rows.reduce((s, r) => s + Number(r.total_horas), 0);
   const totalCliente = rows.reduce((s, r) => s + Number(r.valor_cobrado_cliente), 0);
-
   const kpis = [
     { label: 'Total Plantões', value: String(rows.length) },
     { label: 'Total Horas', value: `${totalHoras.toFixed(1)}h` },
@@ -136,13 +139,12 @@ function gerarPDFFaturamento(rows: LancRow[], periodoLabel: string, filtros: Rec
     startY += 8;
     autoTable(doc, {
       startY,
-      head: [['Data', 'Cooperado', 'Profissão', 'Setor', 'Horas', 'Tipo', 'Valor Cliente']],
-      body: lancs.map(r => [
-        r.data_plantao.split('-').reverse().join('/'),
-        r.cooperados?.nome ?? '—', profissaoLabel[r.profissao] ?? r.profissao,
-        r.sectors?.nome ?? '—', Number(r.total_horas).toFixed(2) + 'h',
+      head: [['Data', 'Cooperado', 'Profissão', 'Setor', 'Tipo', 'Horas', 'Valor Cliente']],
+      body: lancs.sort((a, b) => a.data_plantao.localeCompare(b.data_plantao)).map(r => [
+        fmtData(r.data_plantao), r.cooperados?.nome ?? '—',
+        profissaoLabel[r.profissao] ?? r.profissao, r.sectors?.nome ?? '—',
         tipoPlantaoLabel[r.tipo_plantao] ?? r.tipo_plantao,
-        fmtBRL(Number(r.valor_cobrado_cliente)),
+        Number(r.total_horas).toFixed(2) + 'h', fmtBRL(Number(r.valor_cobrado_cliente)),
       ]),
       foot: [[{ content: `Subtotal ${nome}`, colSpan: 6, styles: { halign: 'right' } }, fmtBRL(subC)]],
       styles: { fontSize: 7.5, cellPadding: 2 },
@@ -151,7 +153,7 @@ function gerarPDFFaturamento(rows: LancRow[], periodoLabel: string, filtros: Rec
       alternateRowStyles: { fillColor: [248, 249, 252] },
       margin: { left: 14, right: 14 },
     });
-    startY = (doc as any).lastAutoTable.finalY + 8;
+    startY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
   });
 
   gerarPDFFooter(doc);
@@ -161,11 +163,10 @@ function gerarPDFFaturamento(rows: LancRow[], periodoLabel: string, filtros: Rec
 function gerarPDFRepasse(rows: LancRow[], periodoLabel: string, filtros: Record<string, string>) {
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
   const W = doc.internal.pageSize.getWidth();
-  gerarPDFHeader(doc, 'Relatório de Repasse', 'Valores repassados aos cooperados', periodoLabel, filtros);
+  gerarPDFHeader(doc, 'Relatório de Repasse', periodoLabel, filtros);
 
   const totalHoras = rows.reduce((s, r) => s + Number(r.total_horas), 0);
   const totalCoop = rows.reduce((s, r) => s + Number(r.valor_repasse_cooperado), 0);
-
   const kpis = [
     { label: 'Total Plantões', value: String(rows.length) },
     { label: 'Total Horas', value: `${totalHoras.toFixed(1)}h` },
@@ -196,17 +197,20 @@ function gerarPDFRepasse(rows: LancRow[], periodoLabel: string, filtros: Record<
     doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(31, 41, 99);
     doc.text(`${nome} — ${profissaoLabel[lancs[0]?.profissao] ?? ''}`, 14, startY);
     doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(100);
-    doc.text(`${lancs.length} plantões | ${lancs.reduce((s, r) => s + Number(r.total_horas), 0).toFixed(1)}h | Repasse: ${fmtBRL(subCoop)}`, 14, startY + 4);
+    const diurnos = lancs.filter(r => r.tipo_plantao === 'normal');
+    const noturnos = lancs.filter(r => r.tipo_plantao !== 'normal');
+    doc.text(
+      `${diurnos.length} diurno(s) · ${noturnos.length} noturno(s) · ${lancs.reduce((s, r) => s + Number(r.total_horas), 0).toFixed(1)}h · Repasse: ${fmtBRL(subCoop)}`,
+      14, startY + 4,
+    );
     startY += 8;
     autoTable(doc, {
       startY,
-      head: [['Data', 'Cliente', 'Setor', 'Horas', 'Tipo', 'Repasse']],
-      body: lancs.map(r => [
-        r.data_plantao.split('-').reverse().join('/'),
-        r.hospitals?.nome ?? '—', r.sectors?.nome ?? '—',
-        Number(r.total_horas).toFixed(2) + 'h',
+      head: [['Data', 'Cliente', 'Setor', 'Tipo', 'Horas', 'Repasse']],
+      body: lancs.sort((a, b) => a.data_plantao.localeCompare(b.data_plantao)).map(r => [
+        fmtData(r.data_plantao), r.hospitals?.nome ?? '—', r.sectors?.nome ?? '—',
         tipoPlantaoLabel[r.tipo_plantao] ?? r.tipo_plantao,
-        fmtBRL(Number(r.valor_repasse_cooperado)),
+        Number(r.total_horas).toFixed(2) + 'h', fmtBRL(Number(r.valor_repasse_cooperado)),
       ]),
       foot: [[{ content: `Subtotal ${nome}`, colSpan: 5, styles: { halign: 'right' } }, fmtBRL(subCoop)]],
       styles: { fontSize: 7.5, cellPadding: 2 },
@@ -215,7 +219,7 @@ function gerarPDFRepasse(rows: LancRow[], periodoLabel: string, filtros: Record<
       alternateRowStyles: { fillColor: [248, 249, 252] },
       margin: { left: 14, right: 14 },
     });
-    startY = (doc as any).lastAutoTable.finalY + 8;
+    startY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
   });
 
   gerarPDFFooter(doc);
@@ -227,6 +231,7 @@ export default function Relatorios() {
   const [loading, setLoading] = useState(true);
   const [periodo, setPeriodo] = useState<PeriodoState>(periodoInicial());
   const [tipoRelatorio, setTipoRelatorio] = useState<TipoRelatorio>('faturamento');
+  const [ordenacao, setOrdenacao] = useState<Ordenacao>('nome');
 
   const [hospitals, setHospitals] = useState<Hospital[]>([]);
   const [sectors, setSectors] = useState<Sector[]>([]);
@@ -236,6 +241,8 @@ export default function Relatorios() {
   const [filterSetor, setFilterSetor] = useState('all');
   const [filterCooperado, setFilterCooperado] = useState('all');
   const [filterProfissao, setFilterProfissao] = useState('all');
+
+  const [expandedCards, setExpandedCards] = useState<Set<string>>(new Set());
 
   const periodoCalc = calcPeriodo(periodo);
 
@@ -261,7 +268,7 @@ export default function Relatorios() {
 
   const setoresFiltrados = useMemo(
     () => filterHospital === 'all' ? sectors : sectors.filter(s => s.hospital_id === filterHospital),
-    [sectors, filterHospital]
+    [sectors, filterHospital],
   );
 
   const filtered = useMemo(() => rows.filter(r => {
@@ -272,68 +279,97 @@ export default function Relatorios() {
     return true;
   }), [rows, filterHospital, filterSetor, filterCooperado, filterProfissao]);
 
-  const porHospital = useMemo(() => {
-    const map: Record<string, { plantoes: number; horas: number; cliente: number }> = {};
-    filtered.forEach(r => {
-      const k = r.hospitals?.nome ?? 'Desconhecido';
-      if (!map[k]) map[k] = { plantoes: 0, horas: 0, cliente: 0 };
-      map[k].plantoes++; map[k].horas += Number(r.total_horas);
-      map[k].cliente += Number(r.valor_cobrado_cliente);
-    });
-    return Object.entries(map).sort((a, b) => b[1].cliente - a[1].cliente);
-  }, [filtered]);
-
-  const porCooperado = useMemo(() => {
-    const map: Record<string, { plantoes: number; horas: number; cooperado: number; profissao: string }> = {};
-    filtered.forEach(r => {
-      const k = r.cooperados?.nome ?? 'Desconhecido';
-      if (!map[k]) map[k] = { plantoes: 0, horas: 0, cooperado: 0, profissao: r.profissao };
-      map[k].plantoes++; map[k].horas += Number(r.total_horas);
-      map[k].cooperado += Number(r.valor_repasse_cooperado);
-    });
-    return Object.entries(map).sort((a, b) => b[1].cooperado - a[1].cooperado);
-  }, [filtered]);
-
-  const porProfissaoFat = useMemo(() => {
-    const map: Record<string, { plantoes: number; horas: number; cliente: number }> = {};
-    filtered.forEach(r => {
-      const k = r.profissao;
-      if (!map[k]) map[k] = { plantoes: 0, horas: 0, cliente: 0 };
-      map[k].plantoes++; map[k].horas += Number(r.total_horas);
-      map[k].cliente += Number(r.valor_cobrado_cliente);
-    });
-    return Object.entries(map).sort((a, b) => b[1].cliente - a[1].cliente);
-  }, [filtered]);
-
-  const porProfissaoRep = useMemo(() => {
-    const map: Record<string, { plantoes: number; horas: number; cooperado: number }> = {};
-    filtered.forEach(r => {
-      const k = r.profissao;
-      if (!map[k]) map[k] = { plantoes: 0, horas: 0, cooperado: 0 };
-      map[k].plantoes++; map[k].horas += Number(r.total_horas);
-      map[k].cooperado += Number(r.valor_repasse_cooperado);
-    });
-    return Object.entries(map).sort((a, b) => b[1].cooperado - a[1].cooperado);
-  }, [filtered]);
-
   const totalCliente = filtered.reduce((s, r) => s + Number(r.valor_cobrado_cliente), 0);
   const totalCooperado = filtered.reduce((s, r) => s + Number(r.valor_repasse_cooperado), 0);
   const totalHoras = filtered.reduce((s, r) => s + Number(r.total_horas), 0);
+  const clientesAtivos = new Set(filtered.map(r => r.hospitals?.id).filter(Boolean)).size;
+  const cooperadosAtivos = new Set(filtered.map(r => r.cooperados?.id).filter(Boolean)).size;
 
-  const th = 'text-left p-3 font-medium text-xs uppercase tracking-wider text-muted-foreground';
-  const thR = th + ' text-right';
+  const cooperadosCards = useMemo(() => {
+    const map = new Map<string, { nome: string; profissao: string; diurno: LancRow[]; noturno: LancRow[] }>();
+    filtered.forEach(r => {
+      const key = r.cooperados?.id ?? '_sem_';
+      if (!map.has(key)) map.set(key, { nome: r.cooperados?.nome ?? 'Sem cooperado', profissao: r.profissao, diurno: [], noturno: [] });
+      const v = map.get(key)!;
+      if (r.tipo_plantao === 'normal') v.diurno.push(r);
+      else v.noturno.push(r);
+    });
+    return [...map.entries()].map(([key, v]) => {
+      const all = [...v.diurno, ...v.noturno];
+      return {
+        key, nome: v.nome, profissao: v.profissao,
+        diurno: [...v.diurno].sort((a, b) => a.data_plantao.localeCompare(b.data_plantao)),
+        noturno: [...v.noturno].sort((a, b) => a.data_plantao.localeCompare(b.data_plantao)),
+        totalPlantoes: all.length,
+        totalHoras: all.reduce((s, r) => s + Number(r.total_horas), 0),
+        totalRepasse: all.reduce((s, r) => s + Number(r.valor_repasse_cooperado), 0),
+        diurnoHoras: v.diurno.reduce((s, r) => s + Number(r.total_horas), 0),
+        diurnoRepasse: v.diurno.reduce((s, r) => s + Number(r.valor_repasse_cooperado), 0),
+        noturnHoras: v.noturno.reduce((s, r) => s + Number(r.total_horas), 0),
+        noturnRepasse: v.noturno.reduce((s, r) => s + Number(r.valor_repasse_cooperado), 0),
+      };
+    }).sort((a, b) => ordenacao === 'nome' ? a.nome.localeCompare(b.nome) : b.totalRepasse - a.totalRepasse);
+  }, [filtered, ordenacao]);
 
+  const clientesCards = useMemo(() => {
+    const map = new Map<string, { nome: string; byProf: Map<string, { diurno: LancRow[]; noturno: LancRow[] }> }>();
+    filtered.forEach(r => {
+      const key = r.hospitals?.id ?? '_sem_';
+      if (!map.has(key)) map.set(key, { nome: r.hospitals?.nome ?? 'Sem cliente', byProf: new Map() });
+      const v = map.get(key)!;
+      if (!v.byProf.has(r.profissao)) v.byProf.set(r.profissao, { diurno: [], noturno: [] });
+      const pg = v.byProf.get(r.profissao)!;
+      if (r.tipo_plantao === 'normal') pg.diurno.push(r);
+      else pg.noturno.push(r);
+    });
+    return [...map.entries()].map(([key, v]) => {
+      const allRows = [...v.byProf.values()].flatMap(pg => [...pg.diurno, ...pg.noturno]);
+      const byProf = [...v.byProf.entries()].map(([prof, pg]) => {
+        const all = [...pg.diurno, ...pg.noturno];
+        return {
+          prof, diurno: pg.diurno, noturno: pg.noturno,
+          totalHoras: all.reduce((s, r) => s + Number(r.total_horas), 0),
+          totalCliente: all.reduce((s, r) => s + Number(r.valor_cobrado_cliente), 0),
+        };
+      }).sort((a, b) => b.totalCliente - a.totalCliente);
+      return {
+        key, nome: v.nome, byProf,
+        allRows: allRows.sort((a, b) => a.data_plantao.localeCompare(b.data_plantao)),
+        totalPlantoes: allRows.length,
+        totalHoras: allRows.reduce((s, r) => s + Number(r.total_horas), 0),
+        totalCliente: allRows.reduce((s, r) => s + Number(r.valor_cobrado_cliente), 0),
+      };
+    }).sort((a, b) => ordenacao === 'nome' ? a.nome.localeCompare(b.nome) : b.totalCliente - a.totalCliente);
+  }, [filtered, ordenacao]);
+
+  const toggleCard = (key: string) => setExpandedCards(prev => {
+    const s = new Set(prev); s.has(key) ? s.delete(key) : s.add(key); return s;
+  });
+
+  const isFaturamento = tipoRelatorio === 'faturamento';
   const getFiltrosNomes = () => ({
     cooperado: cooperadosList.find(c => c.id === filterCooperado)?.nome ?? '',
     hospital: hospitals.find(h => h.id === filterHospital)?.nome ?? '',
     setor: sectors.find(s => s.id === filterSetor)?.nome ?? '',
   });
 
-  const isFaturamento = tipoRelatorio === 'faturamento';
+  const kpis = isFaturamento
+    ? [
+        { label: 'Clientes', value: loading ? '—' : String(clientesAtivos) },
+        { label: 'Plantões', value: loading ? '—' : String(filtered.length) },
+        { label: 'Total de horas', value: loading ? '—' : `${totalHoras.toFixed(1)}h` },
+        { label: 'Total faturado', value: loading ? '—' : formatCurrency(totalCliente), highlight: true },
+      ]
+    : [
+        { label: 'Cooperados', value: loading ? '—' : String(cooperadosAtivos) },
+        { label: 'Plantões', value: loading ? '—' : String(filtered.length) },
+        { label: 'Total de horas', value: loading ? '—' : `${totalHoras.toFixed(1)}h` },
+        { label: 'Total repasse', value: loading ? '—' : formatCurrency(totalCooperado), highlight: true },
+      ];
 
   return (
     <div className="space-y-6">
-      {/* Header */}
+      {/* ── Header ── */}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl md:text-3xl font-bold">Relatórios</h1>
@@ -355,35 +391,29 @@ export default function Relatorios() {
         </div>
       </div>
 
-      {/* Seletor de tipo de relatório */}
+      {/* ── Seletor de tipo ── */}
       <div className="flex gap-3">
-        <button
-          onClick={() => setTipoRelatorio('faturamento')}
-          className={`flex items-center gap-2 px-5 py-3 rounded-lg border text-sm font-medium transition-colors ${
-            isFaturamento
-              ? 'bg-primary text-primary-foreground border-primary shadow-sm'
-              : 'bg-background text-muted-foreground border-border hover:bg-muted/50'
-          }`}>
-          <TrendingUp className="h-4 w-4" />
-          Relatório de Faturamento
-        </button>
-        <button
-          onClick={() => setTipoRelatorio('repasse')}
-          className={`flex items-center gap-2 px-5 py-3 rounded-lg border text-sm font-medium transition-colors ${
-            !isFaturamento
-              ? 'bg-primary text-primary-foreground border-primary shadow-sm'
-              : 'bg-background text-muted-foreground border-border hover:bg-muted/50'
-          }`}>
-          <Users className="h-4 w-4" />
-          Relatório de Repasse
-        </button>
+        {([
+          { key: 'faturamento', label: 'Faturamento', Icon: TrendingUp },
+          { key: 'repasse', label: 'Repasse Cooperados', Icon: Users },
+        ] as const).map(({ key, label, Icon }) => (
+          <button key={key} onClick={() => setTipoRelatorio(key)}
+            className={`flex items-center gap-2 px-5 py-2.5 rounded-xl border text-sm font-medium transition-colors ${
+              tipoRelatorio === key
+                ? 'bg-primary text-primary-foreground border-primary shadow-xs'
+                : 'bg-card text-muted-foreground border-border hover:bg-muted/50'
+            }`}>
+            <Icon className="h-4 w-4" />
+            {label}
+          </button>
+        ))}
       </div>
 
-      {/* Filtros */}
+      {/* ── Filtros ── */}
       <Card>
         <CardContent className="p-4 md:p-5 space-y-3">
-          <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5">
-            <div>
+          <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6">
+            <div className="sm:col-span-2 lg:col-span-1">
               <PeriodoPicker value={periodo} onChange={setPeriodo} />
             </div>
             <div>
@@ -426,307 +456,232 @@ export default function Relatorios() {
                 </SelectContent>
               </Select>
             </div>
+            <div>
+              <Label className="text-xs">Ordenar por</Label>
+              <Select value={ordenacao} onValueChange={v => setOrdenacao(v as Ordenacao)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="nome">Nome (A–Z)</SelectItem>
+                  <SelectItem value="valor">Valor (maior)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
-          <div className="ml-auto text-sm text-muted-foreground text-right">
-            {loading ? 'Carregando…' : `${filtered.length} lançamento${filtered.length !== 1 ? 's' : ''} encontrado${filtered.length !== 1 ? 's' : ''}`}
+          <div className="text-right text-sm text-muted-foreground">
+            {loading ? 'Carregando…' : `${filtered.length} lançamento${filtered.length !== 1 ? 's' : ''}`}
           </div>
         </CardContent>
       </Card>
 
-      {/* KPIs */}
-      {isFaturamento ? (
-        <div className="grid gap-4 sm:grid-cols-3">
-          {[
-            { label: 'Plantões', value: loading ? '—' : String(filtered.length), color: 'text-primary' },
-            { label: 'Total de horas', value: loading ? '—' : `${totalHoras.toFixed(1)}h`, color: 'text-foreground' },
-            { label: 'Total faturado (cliente)', value: loading ? '—' : formatCurrency(totalCliente), color: 'text-success' },
-          ].map(c => (
-            <Card key={c.label} className="shadow-card">
-              <CardContent className="p-5">
-                <p className="text-xs uppercase tracking-wider text-muted-foreground">{c.label}</p>
-                <p className={`text-2xl font-bold tabular-nums mt-1 ${c.color}`}>{c.value}</p>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      ) : (
-        <div className="grid gap-4 sm:grid-cols-3">
-          {[
-            { label: 'Plantões', value: loading ? '—' : String(filtered.length), color: 'text-primary' },
-            { label: 'Total de horas', value: loading ? '—' : `${totalHoras.toFixed(1)}h`, color: 'text-foreground' },
-            { label: 'Total repasse (cooperados)', value: loading ? '—' : formatCurrency(totalCooperado), color: 'text-accent' },
-          ].map(c => (
-            <Card key={c.label} className="shadow-card">
-              <CardContent className="p-5">
-                <p className="text-xs uppercase tracking-wider text-muted-foreground">{c.label}</p>
-                <p className={`text-2xl font-bold tabular-nums mt-1 ${c.color}`}>{c.value}</p>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      )}
+      {/* ── KPIs ── */}
+      <div className="grid gap-4 sm:grid-cols-4">
+        {kpis.map(k => (
+          <Card key={k.label}>
+            <CardContent className="p-5">
+              <p className="text-xs uppercase tracking-wider text-muted-foreground">{k.label}</p>
+              <p className={`text-2xl font-bold tabular-nums mt-1 ${k.highlight ? 'text-primary' : 'text-foreground'}`}>
+                {k.value}
+              </p>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
 
+      {/* ── Conteúdo ── */}
       {loading ? (
         <div className="p-8 text-center text-sm text-muted-foreground">Carregando…</div>
       ) : filtered.length === 0 ? (
-        <Card><CardContent className="p-12 text-center">
-          <FileBarChart2 className="mx-auto h-10 w-10 text-muted-foreground mb-3" />
-          <p className="text-sm text-muted-foreground">Nenhum lançamento encontrado para o período e filtros selecionados.</p>
-        </CardContent></Card>
+        <Card>
+          <CardContent className="p-12 text-center">
+            <FileBarChart2 className="mx-auto h-10 w-10 text-muted-foreground mb-3" />
+            <p className="text-sm text-muted-foreground">Nenhum lançamento encontrado para o período e filtros selecionados.</p>
+          </CardContent>
+        </Card>
       ) : isFaturamento ? (
-        /* ── FATURAMENTO ── */
-        <Tabs defaultValue="hospital">
-          <TabsList>
-            <TabsTrigger value="hospital">Por Cliente</TabsTrigger>
-            <TabsTrigger value="profissao">Por Profissão</TabsTrigger>
-            <TabsTrigger value="detalhado">Detalhado</TabsTrigger>
-          </TabsList>
+        /* ── FATURAMENTO — agrupado por cliente ── */
+        <div className="space-y-3">
+          {clientesCards.map(cliente => {
+            const expanded = expandedCards.has(cliente.key);
+            return (
+              <div key={cliente.key}
+                style={{ borderLeft: '4px solid #2B7FE8' }}
+                className="bg-card rounded-xl border border-border/60 shadow-card overflow-hidden">
+                {/* cabeçalho clicável */}
+                <button className="w-full text-left" onClick={() => toggleCard(cliente.key)}>
+                  <div className="flex items-center justify-between gap-4 px-4 py-3.5 bg-[#F8FAFC] dark:bg-muted/20">
+                    <div>
+                      <p className="font-semibold text-[15px]">{cliente.nome}</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        {cliente.totalPlantoes} plantão{cliente.totalPlantoes !== 1 ? 'ões' : ''} · {cliente.totalHoras.toFixed(1)}h
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2.5 ml-auto">
+                      <span className="font-bold tabular-nums text-primary">{formatCurrency(cliente.totalCliente)}</span>
+                      {expanded
+                        ? <ChevronUp className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                        : <ChevronDown className="h-4 w-4 text-muted-foreground flex-shrink-0" />}
+                    </div>
+                  </div>
+                </button>
 
-          <TabsContent value="hospital">
-            <Card>
-              <CardHeader><CardTitle className="text-base">Faturamento por cliente</CardTitle></CardHeader>
-              <CardContent className="p-0">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead className="bg-muted/40"><tr>
-                      <th className={th}>Cliente</th>
-                      <th className={thR}>Plantões</th>
-                      <th className={thR}>Horas</th>
-                      <th className={thR}>Valor Cliente</th>
-                    </tr></thead>
-                    <tbody className="divide-y">
-                      {porHospital.map(([nome, v]) => (
-                        <tr key={nome} className="hover:bg-muted/30">
-                          <td className="p-3 font-medium">{nome}</td>
-                          <td className="p-3 text-right tabular-nums">{v.plantoes}</td>
-                          <td className="p-3 text-right tabular-nums">{v.horas.toFixed(1)}h</td>
-                          <td className="p-3 text-right tabular-nums font-semibold text-success">{formatCurrency(v.cliente)}</td>
+                {/* breakdown por profissão */}
+                {cliente.byProf.map(p => (
+                  <div key={p.prof} className="px-4 py-2.5 border-t border-border/40 flex items-start gap-3">
+                    <div className="mt-1 h-2.5 w-2.5 rounded-full flex-shrink-0"
+                      style={{ background: PROF_COLORS[p.prof] ?? '#999' }} />
+                    <div>
+                      <p className="text-[13px] font-medium leading-tight">{profissaoLabel[p.prof] ?? p.prof}</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        {p.diurno.length > 0 && `${p.diurno.length} diurno${p.diurno.length !== 1 ? 's' : ''}`}
+                        {p.diurno.length > 0 && p.noturno.length > 0 && ' · '}
+                        {p.noturno.length > 0 && `${p.noturno.length} noturno${p.noturno.length !== 1 ? 's' : ''}`}
+                        {' · '}{p.totalHoras.toFixed(1)}h
+                        {' · '}<span className="text-primary font-semibold">{formatCurrency(p.totalCliente)}</span>
+                      </p>
+                    </div>
+                  </div>
+                ))}
+
+                {/* detalhe expandido */}
+                {expanded && (
+                  <div className="border-t overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-muted/30 text-xs uppercase tracking-wider text-muted-foreground">
+                        <tr>
+                          <th className="text-left p-3 font-medium">Data</th>
+                          <th className="text-left p-3 font-medium">Cooperado</th>
+                          <th className="text-left p-3 font-medium">Profissão</th>
+                          <th className="text-left p-3 font-medium">Setor</th>
+                          <th className="text-left p-3 font-medium">Tipo</th>
+                          <th className="text-right p-3 font-medium">Horas</th>
+                          <th className="text-right p-3 font-medium">Valor</th>
                         </tr>
-                      ))}
-                    </tbody>
-                    <tfoot className="bg-muted/30 font-semibold"><tr>
-                      <td className="p-3">Total</td>
-                      <td className="p-3 text-right tabular-nums">{filtered.length}</td>
-                      <td className="p-3 text-right tabular-nums">{totalHoras.toFixed(1)}h</td>
-                      <td className="p-3 text-right tabular-nums text-success">{formatCurrency(totalCliente)}</td>
-                    </tr></tfoot>
-                  </table>
-                </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          <TabsContent value="profissao">
-            <Card>
-              <CardHeader><CardTitle className="text-base">Faturamento por profissão</CardTitle></CardHeader>
-              <CardContent className="p-0">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead className="bg-muted/40"><tr>
-                      <th className={th}>Profissão</th>
-                      <th className={thR}>Plantões</th>
-                      <th className={thR}>Horas</th>
-                      <th className={thR}>Valor Cliente</th>
-                      <th className={thR}>% do total</th>
-                    </tr></thead>
-                    <tbody className="divide-y">
-                      {porProfissaoFat.map(([prof, v]) => {
-                        const pct = totalCliente > 0 ? (v.cliente / totalCliente) * 100 : 0;
-                        return (
-                          <tr key={prof} className="hover:bg-muted/30">
-                            <td className="p-3 font-medium">{profissaoLabel[prof] ?? prof}</td>
-                            <td className="p-3 text-right tabular-nums">{v.plantoes}</td>
-                            <td className="p-3 text-right tabular-nums">{v.horas.toFixed(1)}h</td>
-                            <td className="p-3 text-right tabular-nums font-semibold text-success">{formatCurrency(v.cliente)}</td>
-                            <td className="p-3 text-right tabular-nums text-muted-foreground">{pct.toFixed(1)}%</td>
+                      </thead>
+                      <tbody className="divide-y">
+                        {cliente.allRows.map(r => (
+                          <tr key={r.id} className="hover:bg-muted/20">
+                            <td className="p-3 tabular-nums text-xs">{fmtData(r.data_plantao)}</td>
+                            <td className="p-3 text-[13px]">{r.cooperados?.nome ?? '—'}</td>
+                            <td className="p-3 text-xs text-muted-foreground">{profissaoLabel[r.profissao]}</td>
+                            <td className="p-3 text-xs text-muted-foreground">{r.sectors?.nome ?? '—'}</td>
+                            <td className="p-3 text-xs">{tipoPlantaoLabel[r.tipo_plantao]}</td>
+                            <td className="p-3 text-right tabular-nums text-xs">{Number(r.total_horas).toFixed(2)}h</td>
+                            <td className="p-3 text-right tabular-nums font-semibold text-primary">{formatCurrency(r.valor_cobrado_cliente)}</td>
                           </tr>
-                        );
-                      })}
-                    </tbody>
-                    <tfoot className="bg-muted/30 font-semibold"><tr>
-                      <td className="p-3">Total</td>
-                      <td className="p-3 text-right tabular-nums">{filtered.length}</td>
-                      <td className="p-3 text-right tabular-nums">{totalHoras.toFixed(1)}h</td>
-                      <td className="p-3 text-right tabular-nums text-success">{formatCurrency(totalCliente)}</td>
-                      <td className="p-3 text-right tabular-nums">100%</td>
-                    </tr></tfoot>
-                  </table>
-                </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
 
-          <TabsContent value="detalhado">
-            <Card>
-              <CardHeader><CardTitle className="text-base">Faturamento detalhado — {filtered.length} lançamentos</CardTitle></CardHeader>
-              <CardContent className="p-0">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead className="bg-muted/40"><tr>
-                      <th className={th}>Data</th>
-                      <th className={th}>Cooperado</th>
-                      <th className={th}>Cliente / Setor</th>
-                      <th className={th}>Tipo</th>
-                      <th className={thR}>Horas</th>
-                      <th className={thR}>Valor Cliente</th>
-                    </tr></thead>
-                    <tbody className="divide-y">
-                      {filtered.map(r => (
-                        <tr key={r.id} className="hover:bg-muted/30">
-                          <td className="p-3 tabular-nums">{r.data_plantao.split('-').reverse().join('/')}</td>
-                          <td className="p-3">
-                            <div className="font-medium">{r.cooperados?.nome ?? '—'}</div>
-                            <div className="text-xs text-muted-foreground">{profissaoLabel[r.profissao]}</div>
-                          </td>
-                          <td className="p-3">
-                            <div>{r.hospitals?.nome ?? '—'}</div>
-                            <div className="text-xs text-muted-foreground">{r.sectors?.nome ?? '—'}</div>
-                          </td>
-                          <td className="p-3 text-sm">{tipoPlantaoLabel[r.tipo_plantao]}</td>
-                          <td className="p-3 text-right tabular-nums">{Number(r.total_horas).toFixed(2)}h</td>
-                          <td className="p-3 text-right tabular-nums font-semibold text-success">{formatCurrency(r.valor_cobrado_cliente)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                    <tfoot className="bg-muted/30 font-semibold"><tr>
-                      <td colSpan={4} className="p-3 text-right text-xs uppercase tracking-wider text-muted-foreground">Totais</td>
-                      <td className="p-3 text-right tabular-nums">{totalHoras.toFixed(1)}h</td>
-                      <td className="p-3 text-right tabular-nums text-success">{formatCurrency(totalCliente)}</td>
-                    </tr></tfoot>
-                  </table>
+                {/* rodapé total */}
+                <div className="flex items-center justify-between px-4 py-2.5 bg-[#EFF6FF] dark:bg-primary/10 border-t">
+                  <span className="text-xs font-semibold text-primary uppercase tracking-wide">Total {cliente.nome}</span>
+                  <span className="font-bold text-primary tabular-nums">{formatCurrency(cliente.totalCliente)}</span>
                 </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
-        </Tabs>
+              </div>
+            );
+          })}
+        </div>
       ) : (
-        /* ── REPASSE ── */
-        <Tabs defaultValue="cooperado">
-          <TabsList>
-            <TabsTrigger value="cooperado">Por Cooperado</TabsTrigger>
-            <TabsTrigger value="profissao">Por Profissão</TabsTrigger>
-            <TabsTrigger value="detalhado">Detalhado</TabsTrigger>
-          </TabsList>
+        /* ── REPASSE — agrupado por cooperado ── */
+        <div className="space-y-3">
+          {cooperadosCards.map(cooperado => {
+            const expanded = expandedCards.has(cooperado.key);
+            const borderColor = PROF_COLORS[cooperado.profissao] ?? '#999';
+            const allRows = [...cooperado.diurno, ...cooperado.noturno];
+            return (
+              <div key={cooperado.key}
+                style={{ borderLeft: `4px solid ${borderColor}` }}
+                className="bg-card rounded-xl border border-border/60 shadow-card overflow-hidden">
+                {/* cabeçalho clicável */}
+                <button className="w-full text-left" onClick={() => toggleCard(cooperado.key)}>
+                  <div className="flex items-center justify-between gap-4 px-4 py-3.5 bg-[#F8FAFC] dark:bg-muted/20">
+                    <div>
+                      <p className="font-semibold text-[15px]">{cooperado.nome}</p>
+                      <p className="text-xs text-muted-foreground mt-0.5" style={{ color: borderColor }}>
+                        {profissaoLabel[cooperado.profissao] ?? cooperado.profissao}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2.5 ml-auto">
+                      <div className="text-right">
+                        <p className="font-bold tabular-nums text-primary">{formatCurrency(cooperado.totalRepasse)}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {cooperado.totalPlantoes} plantão{cooperado.totalPlantoes !== 1 ? 'ões' : ''} · {cooperado.totalHoras.toFixed(1)}h
+                        </p>
+                      </div>
+                      {expanded
+                        ? <ChevronUp className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                        : <ChevronDown className="h-4 w-4 text-muted-foreground flex-shrink-0" />}
+                    </div>
+                  </div>
+                </button>
 
-          <TabsContent value="cooperado">
-            <Card>
-              <CardHeader><CardTitle className="text-base">Repasse por cooperado</CardTitle></CardHeader>
-              <CardContent className="p-0">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead className="bg-muted/40"><tr>
-                      <th className={th}>Cooperado</th>
-                      <th className={th}>Profissão</th>
-                      <th className={thR}>Plantões</th>
-                      <th className={thR}>Horas</th>
-                      <th className={thR}>Repasse</th>
-                    </tr></thead>
-                    <tbody className="divide-y">
-                      {porCooperado.map(([nome, v]) => (
-                        <tr key={nome} className="hover:bg-muted/30">
-                          <td className="p-3 font-medium">{nome}</td>
-                          <td className="p-3 text-muted-foreground">{profissaoLabel[v.profissao] ?? v.profissao}</td>
-                          <td className="p-3 text-right tabular-nums">{v.plantoes}</td>
-                          <td className="p-3 text-right tabular-nums">{v.horas.toFixed(1)}h</td>
-                          <td className="p-3 text-right tabular-nums font-semibold text-accent">{formatCurrency(v.cooperado)}</td>
+                {/* seção diurnos */}
+                {cooperado.diurno.length > 0 && (
+                  <div className="px-4 py-2.5 border-t border-border/40">
+                    <p className="text-[13px] font-medium text-muted-foreground">● Plantões Diurnos</p>
+                    <p className="text-xs text-muted-foreground pl-4 mt-0.5">
+                      {cooperado.diurno.length} plantão{cooperado.diurno.length !== 1 ? 'ões' : ''}
+                      {' · '}{cooperado.diurnoHoras.toFixed(1)}h
+                      {' · '}<span className="text-primary font-semibold">{formatCurrency(cooperado.diurnoRepasse)}</span>
+                    </p>
+                  </div>
+                )}
+
+                {/* seção noturnos */}
+                {cooperado.noturno.length > 0 && (
+                  <div className="px-4 py-2.5 border-t border-border/40">
+                    <p className="text-[13px] font-medium text-muted-foreground">● Plantões Noturnos</p>
+                    <p className="text-xs text-muted-foreground pl-4 mt-0.5">
+                      {cooperado.noturno.length} plantão{cooperado.noturno.length !== 1 ? 'ões' : ''}
+                      {' · '}{cooperado.noturnHoras.toFixed(1)}h
+                      {' · '}<span className="text-primary font-semibold">{formatCurrency(cooperado.noturnRepasse)}</span>
+                    </p>
+                  </div>
+                )}
+
+                {/* detalhe expandido */}
+                {expanded && (
+                  <div className="border-t overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-muted/30 text-xs uppercase tracking-wider text-muted-foreground">
+                        <tr>
+                          <th className="text-left p-3 font-medium">Data</th>
+                          <th className="text-left p-3 font-medium">Cliente</th>
+                          <th className="text-left p-3 font-medium">Setor</th>
+                          <th className="text-left p-3 font-medium">Tipo</th>
+                          <th className="text-right p-3 font-medium">Horas</th>
+                          <th className="text-right p-3 font-medium">Repasse</th>
                         </tr>
-                      ))}
-                    </tbody>
-                    <tfoot className="bg-muted/30 font-semibold"><tr>
-                      <td colSpan={2} className="p-3">Total</td>
-                      <td className="p-3 text-right tabular-nums">{filtered.length}</td>
-                      <td className="p-3 text-right tabular-nums">{totalHoras.toFixed(1)}h</td>
-                      <td className="p-3 text-right tabular-nums text-accent">{formatCurrency(totalCooperado)}</td>
-                    </tr></tfoot>
-                  </table>
-                </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          <TabsContent value="profissao">
-            <Card>
-              <CardHeader><CardTitle className="text-base">Repasse por profissão</CardTitle></CardHeader>
-              <CardContent className="p-0">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead className="bg-muted/40"><tr>
-                      <th className={th}>Profissão</th>
-                      <th className={thR}>Plantões</th>
-                      <th className={thR}>Horas</th>
-                      <th className={thR}>Repasse</th>
-                      <th className={thR}>% do total</th>
-                    </tr></thead>
-                    <tbody className="divide-y">
-                      {porProfissaoRep.map(([prof, v]) => {
-                        const pct = totalCooperado > 0 ? (v.cooperado / totalCooperado) * 100 : 0;
-                        return (
-                          <tr key={prof} className="hover:bg-muted/30">
-                            <td className="p-3 font-medium">{profissaoLabel[prof] ?? prof}</td>
-                            <td className="p-3 text-right tabular-nums">{v.plantoes}</td>
-                            <td className="p-3 text-right tabular-nums">{v.horas.toFixed(1)}h</td>
-                            <td className="p-3 text-right tabular-nums font-semibold text-accent">{formatCurrency(v.cooperado)}</td>
-                            <td className="p-3 text-right tabular-nums text-muted-foreground">{pct.toFixed(1)}%</td>
+                      </thead>
+                      <tbody className="divide-y">
+                        {allRows.map(r => (
+                          <tr key={r.id} className="hover:bg-muted/20">
+                            <td className="p-3 tabular-nums text-xs">{fmtData(r.data_plantao)}</td>
+                            <td className="p-3 text-[13px]">{r.hospitals?.nome ?? '—'}</td>
+                            <td className="p-3 text-xs text-muted-foreground">{r.sectors?.nome ?? '—'}</td>
+                            <td className="p-3 text-xs">{tipoPlantaoLabel[r.tipo_plantao]}</td>
+                            <td className="p-3 text-right tabular-nums text-xs">{Number(r.total_horas).toFixed(2)}h</td>
+                            <td className="p-3 text-right tabular-nums font-semibold text-primary">{formatCurrency(r.valor_repasse_cooperado)}</td>
                           </tr>
-                        );
-                      })}
-                    </tbody>
-                    <tfoot className="bg-muted/30 font-semibold"><tr>
-                      <td className="p-3">Total</td>
-                      <td className="p-3 text-right tabular-nums">{filtered.length}</td>
-                      <td className="p-3 text-right tabular-nums">{totalHoras.toFixed(1)}h</td>
-                      <td className="p-3 text-right tabular-nums text-accent">{formatCurrency(totalCooperado)}</td>
-                      <td className="p-3 text-right tabular-nums">100%</td>
-                    </tr></tfoot>
-                  </table>
-                </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
 
-          <TabsContent value="detalhado">
-            <Card>
-              <CardHeader><CardTitle className="text-base">Repasse detalhado — {filtered.length} lançamentos</CardTitle></CardHeader>
-              <CardContent className="p-0">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead className="bg-muted/40"><tr>
-                      <th className={th}>Data</th>
-                      <th className={th}>Cooperado</th>
-                      <th className={th}>Cliente / Setor</th>
-                      <th className={th}>Tipo</th>
-                      <th className={thR}>Horas</th>
-                      <th className={thR}>Repasse</th>
-                    </tr></thead>
-                    <tbody className="divide-y">
-                      {filtered.map(r => (
-                        <tr key={r.id} className="hover:bg-muted/30">
-                          <td className="p-3 tabular-nums">{r.data_plantao.split('-').reverse().join('/')}</td>
-                          <td className="p-3">
-                            <div className="font-medium">{r.cooperados?.nome ?? '—'}</div>
-                            <div className="text-xs text-muted-foreground">{profissaoLabel[r.profissao]}</div>
-                          </td>
-                          <td className="p-3">
-                            <div>{r.hospitals?.nome ?? '—'}</div>
-                            <div className="text-xs text-muted-foreground">{r.sectors?.nome ?? '—'}</div>
-                          </td>
-                          <td className="p-3 text-sm">{tipoPlantaoLabel[r.tipo_plantao]}</td>
-                          <td className="p-3 text-right tabular-nums">{Number(r.total_horas).toFixed(2)}h</td>
-                          <td className="p-3 text-right tabular-nums font-semibold text-accent">{formatCurrency(r.valor_repasse_cooperado)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                    <tfoot className="bg-muted/30 font-semibold"><tr>
-                      <td colSpan={4} className="p-3 text-right text-xs uppercase tracking-wider text-muted-foreground">Totais</td>
-                      <td className="p-3 text-right tabular-nums">{totalHoras.toFixed(1)}h</td>
-                      <td className="p-3 text-right tabular-nums text-accent">{formatCurrency(totalCooperado)}</td>
-                    </tr></tfoot>
-                  </table>
+                {/* rodapé total */}
+                <div className="flex items-center justify-between px-4 py-2.5 bg-[#EFF6FF] dark:bg-primary/10 border-t">
+                  <span className="text-xs font-semibold text-primary uppercase tracking-wide">
+                    Total {cooperado.nome.split(' ')[0]}
+                  </span>
+                  <span className="font-bold text-primary tabular-nums">{formatCurrency(cooperado.totalRepasse)}</span>
                 </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
-        </Tabs>
+              </div>
+            );
+          })}
+        </div>
       )}
     </div>
   );

@@ -1,8 +1,12 @@
 export const formatCurrency = (value: number | null | undefined) =>
   new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(Number(value ?? 0));
 
-export const formatDate = (value: string | Date) =>
-  new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date(value));
+export const formatDate = (value: string | Date) => {
+  const date = typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)
+    ? new Date(value + 'T00:00:00')
+    : new Date(value as string);
+  return new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(date);
+};
 
 export const profissaoLabel: Record<string, string> = {
   enfermeiro: 'Enfermeiro(a)',
