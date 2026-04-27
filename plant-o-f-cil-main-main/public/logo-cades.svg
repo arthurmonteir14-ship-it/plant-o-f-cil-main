@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
+  <defs>
+    <linearGradient id="blue1" x1="0" y1="1" x2="0.8" y2="0" gradientUnits="objectBoundingBox">
+      <stop offset="0%" stop-color="#1040A8"/>
+      <stop offset="60%" stop-color="#1E60C8"/>
+      <stop offset="100%" stop-color="#5090E8"/>
+    </linearGradient>
+    <linearGradient id="pink1" x1="0" y1="1" x2="1" y2="0" gradientUnits="objectBoundingBox">
+      <stop offset="0%" stop-color="#B86898"/>
+      <stop offset="100%" stop-color="#E0A8C8"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Blue ribbon (main, upper) -->
+  <path d="
+    M5 42
+    C3 36 6 30 11 23
+    C15 17 20 17 24 11
+    C28 5 27 1 31 0
+    L38 0
+    C35 3 36 8 32 14
+    C27 22 22 21 18 27
+    C13 34 10 40 8 46
+    Z
+  " fill="url(#blue1)"/>
+
+  <!-- Pink ribbon (secondary, lower) -->
+  <path d="
+    M14 48
+    C12 44 14 40 18 35
+    C22 30 27 30 31 24
+    C35 18 36 12 40 10
+    L46 14
+    C43 18 41 24 37 29
+    C33 35 28 34 24 39
+    C20 44 19 48 16 48
+    Z
+  " fill="url(#pink1)"/>
+</svg>
