@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
+  <defs>
+    <linearGradient id="cg1" x1="4" y1="4" x2="36" y2="44" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1B3FCC"/>
+      <stop offset="100%" stop-color="#6B4FBF"/>
+    </linearGradient>
+    <linearGradient id="cg2" x1="14" y1="6" x2="46" y2="42" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#5A8DE8"/>
+      <stop offset="100%" stop-color="#C49AD8"/>
+    </linearGradient>
+  </defs>
+  <!-- Bold primary chevron -->
+  <path d="M28 5 L9 24 L28 43" stroke="url(#cg1)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Secondary lighter chevron, offset right -->
+  <path d="M38 11 L22 27 L38 43" stroke="url(#cg2)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity="0.75"/>
+</svg>
