@@ -16,6 +16,7 @@ export const profissaoLabel: Record<string, string> = {
   fisioterapeuta: 'Fisioterapeuta',
   auxiliar_administrativo: 'Auxiliar Administrativo',
   tecnico_radiologia: 'Técnico de Radiologia',
+  tecnico_hemodialise: 'Técnico de Hemodiálise',
 };
 
 export const tipoPlantaoLabel: Record<string, string> = {
