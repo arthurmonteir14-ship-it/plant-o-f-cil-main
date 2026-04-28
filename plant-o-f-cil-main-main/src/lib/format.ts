@@ -37,7 +37,7 @@ export const statusLabel: Record<string, string> = {
 };
 
 export const roleLabel: Record<string, string> = {
-  admin_master: 'Admin Master',
+  admin_master: 'Administrativo',
   coordenadora: 'Coordenadora',
   administrativo: 'Administrativo',
   nac: 'NAC',
