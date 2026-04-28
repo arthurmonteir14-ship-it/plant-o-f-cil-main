@@ -453,7 +453,8 @@ export default function Fechamento() {
       .select('id, data_plantao, total_horas, profissao, tipo_plantao, valor_cobrado_cliente, valor_repasse_cooperado, cooperados(id, nome), hospitals(id, nome), sectors(id, nome)')
       .gte('data_plantao', periodoCalc.inicio)
       .lte('data_plantao', periodoCalc.fim)
-      .order('data_plantao', { ascending: true });
+      .order('data_plantao', { ascending: true })
+      .limit(5000);
     setRows((data ?? []) as unknown as LancRow[]);
     setLoading(false);
   };

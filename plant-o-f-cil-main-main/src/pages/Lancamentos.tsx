@@ -56,7 +56,8 @@ export default function Lancamentos() {
       .select('id, data_plantao, horario_inicio, horario_fim, total_horas, profissao, tipo_plantao, valor_cobrado_cliente, valor_repasse_cooperado, cooperados(id, nome), hospitals(id, nome), sectors(id, nome)')
       .gte('data_plantao', inicio)
       .lte('data_plantao', fim)
-      .order('data_plantao', { ascending: false });
+      .order('data_plantao', { ascending: false })
+      .limit(5000);
     if (error) toast.error('Erro ao carregar lançamentos: ' + error.message);
     setRows((data ?? []) as unknown as Row[]);
     setLoading(false);
