@@ -448,14 +448,23 @@ export default function Fechamento() {
 
   const load = async () => {
     setLoading(true);
-    const { data } = await supabase
-      .from('lancamentos_plantoes')
-      .select('id, data_plantao, total_horas, profissao, tipo_plantao, valor_cobrado_cliente, valor_repasse_cooperado, cooperados(id, nome), hospitals(id, nome), sectors(id, nome)')
-      .gte('data_plantao', periodoCalc.inicio)
-      .lte('data_plantao', periodoCalc.fim)
-      .order('data_plantao', { ascending: true })
-      .limit(5000);
-    setRows((data ?? []) as unknown as LancRow[]);
+    const PAGE = 1000;
+    let all: LancRow[] = [];
+    let from = 0;
+    while (true) {
+      const { data, error } = await supabase
+        .from('lancamentos_plantoes')
+        .select('id, data_plantao, total_horas, profissao, tipo_plantao, valor_cobrado_cliente, valor_repasse_cooperado, cooperados(id, nome), hospitals(id, nome), sectors(id, nome)')
+        .gte('data_plantao', periodoCalc.inicio)
+        .lte('data_plantao', periodoCalc.fim)
+        .order('data_plantao', { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (error) break;
+      all = [...all, ...((data ?? []) as unknown as LancRow[])];
+      if (!data || data.length < PAGE) break;
+      from += PAGE;
+    }
+    setRows(all);
     setLoading(false);
   };
 

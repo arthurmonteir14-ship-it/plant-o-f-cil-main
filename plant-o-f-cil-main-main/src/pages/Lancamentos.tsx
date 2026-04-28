@@ -51,15 +51,23 @@ export default function Lancamentos() {
 
   const fetchRows = useCallback(async () => {
     setLoading(true);
-    const { data, error } = await supabase
-      .from('lancamentos_plantoes')
-      .select('id, data_plantao, horario_inicio, horario_fim, total_horas, profissao, tipo_plantao, valor_cobrado_cliente, valor_repasse_cooperado, cooperados(id, nome), hospitals(id, nome), sectors(id, nome)')
-      .gte('data_plantao', inicio)
-      .lte('data_plantao', fim)
-      .order('data_plantao', { ascending: false })
-      .limit(5000);
-    if (error) toast.error('Erro ao carregar lançamentos: ' + error.message);
-    setRows((data ?? []) as unknown as Row[]);
+    const PAGE = 1000;
+    let all: Row[] = [];
+    let from = 0;
+    while (true) {
+      const { data, error } = await supabase
+        .from('lancamentos_plantoes')
+        .select('id, data_plantao, horario_inicio, horario_fim, total_horas, profissao, tipo_plantao, valor_cobrado_cliente, valor_repasse_cooperado, cooperados(id, nome), hospitals(id, nome), sectors(id, nome)')
+        .gte('data_plantao', inicio)
+        .lte('data_plantao', fim)
+        .order('data_plantao', { ascending: false })
+        .range(from, from + PAGE - 1);
+      if (error) { toast.error('Erro ao carregar lançamentos: ' + error.message); break; }
+      all = [...all, ...((data ?? []) as unknown as Row[])];
+      if (!data || data.length < PAGE) break;
+      from += PAGE;
+    }
+    setRows(all);
     setLoading(false);
   }, [inicio, fim]);
 
