@@ -1,4 +1,7 @@
 import { useEffect, useState, useMemo } from 'react';
+
+const toTitleCase = (s: string) =>
+  s.trim().toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
 import { supabase } from '@/integrations/supabase/client';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -101,7 +104,7 @@ export default function CadastroCooperado() {
     if (form.cpf && !validarCPF(form.cpf)) return toast.error('CPF inválido');
     setSaving(true);
     const payload = {
-      nome: form.nome.trim(),
+      nome: toTitleCase(form.nome),
       cpf: form.cpf.replace(/\D/g, '') || null,
       data_nascimento: form.data_nascimento || null,
       telefone: form.telefone.trim() || null,

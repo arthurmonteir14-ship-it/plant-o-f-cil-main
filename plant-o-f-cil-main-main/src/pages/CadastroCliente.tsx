@@ -1,4 +1,7 @@
 import { useEffect, useState, useMemo } from 'react';
+
+const toTitleCase = (s: string) =>
+  s.trim().toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
 import { supabase } from '@/integrations/supabase/client';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -103,7 +106,7 @@ export default function CadastroCliente() {
   const adicionarSetor = async () => {
     if (!novoSetor.trim() || !setorCliente) return;
     setSavingSetor(true);
-    const { error } = await supabase.from('sectors').insert({ hospital_id: setorCliente.id, nome: novoSetor.trim(), ativo: true } as never);
+    const { error } = await supabase.from('sectors').insert({ hospital_id: setorCliente.id, nome: toTitleCase(novoSetor), ativo: true } as never);
     setSavingSetor(false);
     if (error) return toast.error(error.message);
     toast.success('Setor adicionado');
@@ -113,7 +116,7 @@ export default function CadastroCliente() {
 
   const salvarEdicaoSetor = async (id: string) => {
     if (!editNomeSetor.trim() || !setorCliente) return;
-    const { error } = await supabase.from('sectors').update({ nome: editNomeSetor.trim() } as never).eq('id', id);
+    const { error } = await supabase.from('sectors').update({ nome: toTitleCase(editNomeSetor) } as never).eq('id', id);
     if (error) return toast.error(error.message);
     toast.success('Setor atualizado');
     setEditandoSetor(null);
@@ -194,7 +197,7 @@ export default function CadastroCliente() {
     if (diaVenc !== null && (diaVenc < 1 || diaVenc > 31)) return toast.error('Dia de vencimento deve ser entre 1 e 31');
     setSaving(true);
     const payload = {
-      nome: form.nome.trim(), nome_fantasia: form.nome_fantasia.trim() || null,
+      nome: toTitleCase(form.nome), nome_fantasia: form.nome_fantasia.trim() || null,
       cnpj: form.cnpj.replace(/\D/g, '') || null, tipo: form.tipo, ativo: form.ativo,
       cep: form.cep.replace(/\D/g, '') || null, endereco: form.endereco.trim() || null,
       numero: form.numero.trim() || null, complemento: form.complemento.trim() || null,
