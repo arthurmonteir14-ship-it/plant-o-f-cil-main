@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from 'react';
 
 const toTitleCase = (s: string) =>
-  s.trim().toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
+  s.trim().toLowerCase().split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
 import { supabase } from '@/integrations/supabase/client';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
