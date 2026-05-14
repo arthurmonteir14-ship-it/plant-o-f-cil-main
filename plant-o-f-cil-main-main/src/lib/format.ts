@@ -10,6 +10,7 @@ export const formatDate = (value: string | Date) => {
 
 export const profissaoLabel: Record<string, string> = {
   enfermeiro: 'Enfermeiro(a)',
+  enfermeiro_rt: 'Enfermeiro(a) RT',
   tecnico_enfermagem: 'Técnico(a) de Enfermagem',
   fonoaudiologo: 'Fonoaudiólogo(a)',
   assistente_social: 'Assistente Social',

@@ -322,6 +322,7 @@ export type Database = {
       app_role: "admin_master" | "coordenadora" | "administrativo" | "nac"
       profissao_enum:
         | "enfermeiro"
+        | "enfermeiro_rt"
         | "tecnico_enfermagem"
         | "fonoaudiologo"
         | "assistente_social"

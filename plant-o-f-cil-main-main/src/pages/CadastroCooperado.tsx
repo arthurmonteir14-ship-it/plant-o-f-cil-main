@@ -21,6 +21,7 @@ interface Cooperado {
   id: string; nome: string; cpf: string | null; data_nascimento: string | null;
   telefone: string | null; email: string | null; profissao: string;
   registro_profissional: string | null; ativo: boolean;
+  rg: string | null; pis_inss: string | null;
   banco: string | null; agencia: string | null; conta: string | null;
   tipo_conta: string | null; pix: string | null; observacoes: string | null;
 }
@@ -45,6 +46,7 @@ const validarCPF = (cpf: string): boolean => {
 const emptyForm = {
   nome: '', cpf: '', data_nascimento: '', telefone: '', email: '',
   profissao: 'enfermeiro', registro_profissional: '', ativo: true,
+  rg: '', pis_inss: '',
   banco: '', agencia: '', conta: '', tipo_conta: 'corrente', pix: '',
   observacoes: '',
 };
@@ -92,6 +94,7 @@ export default function CadastroCooperado() {
       telefone: r.telefone ?? '', email: r.email ?? '',
       profissao: r.profissao, registro_profissional: r.registro_profissional ?? '',
       ativo: r.ativo,
+      rg: r.rg ?? '', pis_inss: r.pis_inss ?? '',
       banco: r.banco ?? '', agencia: r.agencia ?? '', conta: r.conta ?? '',
       tipo_conta: r.tipo_conta ?? 'corrente', pix: r.pix ?? '',
       observacoes: r.observacoes ?? '',
@@ -109,9 +112,11 @@ export default function CadastroCooperado() {
       data_nascimento: form.data_nascimento || null,
       telefone: form.telefone.trim() || null,
       email: form.email.trim() || null,
-      profissao: form.profissao as 'enfermeiro' | 'tecnico_enfermagem' | 'fonoaudiologo' | 'assistente_social',
+      profissao: form.profissao as 'enfermeiro' | 'enfermeiro_rt' | 'tecnico_enfermagem' | 'fonoaudiologo' | 'assistente_social',
       registro_profissional: form.registro_profissional.trim() || null,
       ativo: form.ativo,
+      rg: form.rg.trim() || null,
+      pis_inss: form.pis_inss.trim() || null,
       banco: form.banco.trim() || null,
       agencia: form.agencia.trim() || null,
       conta: form.conta.trim() || null,
@@ -265,6 +270,16 @@ export default function CadastroCooperado() {
                 <div>
                   <Label>CPF</Label>
                   <Input value={form.cpf} onChange={e => f('cpf', maskCPF(e.target.value))} placeholder="000.000.000-00" />
+                </div>
+                <div>
+                  <Label>RG</Label>
+                  <Input value={form.rg} onChange={e => f('rg', e.target.value)} placeholder="Ex.: 1234567 SSP/ES" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label>PIS / INSS</Label>
+                  <Input value={form.pis_inss} onChange={e => f('pis_inss', e.target.value)} placeholder="000.00000.00-0" />
                 </div>
                 <div>
                   <Label>Data de nascimento</Label>
