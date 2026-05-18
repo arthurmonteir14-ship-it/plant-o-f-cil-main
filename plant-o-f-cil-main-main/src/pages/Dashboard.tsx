@@ -120,7 +120,7 @@ export default function Dashboard() {
           .lte('data_plantao', fim)
           .order('data_plantao', { ascending: true }),
         supabase.from('hospitals').select('id, nome').order('nome'),
-        supabase.from('sectors').select('id, nome, hospital_id').order('nome'),
+        supabase.from('sectors').select('id, nome, hospital_id').eq('ativo', true).order('nome'),
       ]);
 
       const rows: ChartRow[] = (lancs ?? []).map((r: any) => ({

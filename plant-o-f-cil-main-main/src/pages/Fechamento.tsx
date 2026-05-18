@@ -1262,7 +1262,7 @@ export default function Fechamento() {
 
   useEffect(() => {
     supabase.from('hospitals').select('id, nome').order('nome').then(({ data }) => setHospitals(data ?? []));
-    supabase.from('sectors').select('id, nome, hospital_id').order('nome').then(({ data }) => setSectors(data ?? []));
+    supabase.from('sectors').select('id, nome, hospital_id').eq('ativo', true).order('nome').then(({ data }) => setSectors(data ?? []));
     supabase.from('cooperados').select('id, nome, cpf, email, profissao, rg, pis_inss, pix').order('nome')
       .then(({ data }) => setCooperados((data ?? []) as Cooperado[]));
   }, []);
