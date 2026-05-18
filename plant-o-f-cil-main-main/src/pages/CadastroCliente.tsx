@@ -13,7 +13,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
-import { Plus, Loader2, Pencil, PowerOff, Search, MapPin, Layers, Trash2, Check, X } from 'lucide-react';
+import { Plus, Loader2, Pencil, PowerOff, Search, MapPin, Layers, Check, X } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface Cliente {
@@ -79,7 +79,8 @@ export default function CadastroCliente() {
   const [savingSetor, setSavingSetor] = useState(false);
   const [editandoSetor, setEditandoSetor] = useState<string | null>(null);
   const [editNomeSetor, setEditNomeSetor] = useState('');
-  const [deletandoSetor, setDeletandoSetor] = useState<Setor | null>(null);
+  const [setorToggle, setSetorToggle] = useState<Setor | null>(null);
+  const [mostrarInativos, setMostrarInativos] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -100,6 +101,7 @@ export default function CadastroCliente() {
     setSetorCliente(cliente);
     setNovoSetor('');
     setEditandoSetor(null);
+    setMostrarInativos(false);
     loadSetores(cliente.id);
   };
 
@@ -123,19 +125,12 @@ export default function CadastroCliente() {
     loadSetores(setorCliente.id);
   };
 
-  const confirmarDeleteSetor = async () => {
-    if (!deletandoSetor || !setorCliente) return;
-    // Verificar lançamentos vinculados
-    const { count } = await supabase.from('lancamentos_plantoes').select('id', { count: 'exact', head: true }).eq('setor_id', deletandoSetor.id);
-    if ((count ?? 0) > 0) {
-      toast.error(`Este setor possui ${count} lançamento(s). Delete os lançamentos primeiro.`);
-      setDeletandoSetor(null);
-      return;
-    }
-    const { error } = await supabase.from('sectors').delete().eq('id', deletandoSetor.id);
+  const toggleAtivoSetor = async () => {
+    if (!setorToggle || !setorCliente) return;
+    const { error } = await supabase.from('sectors').update({ ativo: !setorToggle.ativo } as never).eq('id', setorToggle.id);
     if (error) return toast.error(error.message);
-    toast.success('Setor removido');
-    setDeletandoSetor(null);
+    toast.success(setorToggle.ativo ? 'Setor desativado' : 'Setor reativado');
+    setSetorToggle(null);
     loadSetores(setorCliente.id);
   };
 
@@ -376,42 +371,65 @@ export default function CadastroCliente() {
                 Nenhum setor cadastrado. Adicione o primeiro acima.
               </div>
             ) : (
-              <div className="divide-y rounded-lg border">
-                {setores.map(s => (
-                  <div key={s.id} className="flex items-center gap-2 p-3">
-                    {editandoSetor === s.id ? (
-                      <>
-                        <Input
-                          value={editNomeSetor}
-                          onChange={e => setEditNomeSetor(e.target.value)}
-                          className="flex-1 h-8 text-sm"
-                          autoFocus
-                          onKeyDown={e => {
-                            if (e.key === 'Enter') salvarEdicaoSetor(s.id);
-                            if (e.key === 'Escape') setEditandoSetor(null);
-                          }}
-                        />
-                        <Button size="icon" variant="ghost" className="h-7 w-7 text-success" onClick={() => salvarEdicaoSetor(s.id)}>
-                          <Check className="h-3.5 w-3.5" />
-                        </Button>
-                        <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => setEditandoSetor(null)}>
-                          <X className="h-3.5 w-3.5" />
-                        </Button>
-                      </>
-                    ) : (
-                      <>
-                        <span className="flex-1 text-sm">{s.nome}</span>
-                        <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => { setEditandoSetor(s.id); setEditNomeSetor(s.nome); }}>
-                          <Pencil className="h-3.5 w-3.5" />
-                        </Button>
-                        <Button size="icon" variant="ghost" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => setDeletandoSetor(s)}>
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
-                      </>
-                    )}
-                  </div>
-                ))}
-              </div>
+              <>
+                <div className="divide-y rounded-lg border">
+                  {setores.filter(s => mostrarInativos || s.ativo).map(s => (
+                    <div key={s.id} className={`flex items-center gap-2 p-3 ${!s.ativo ? 'bg-muted/40' : ''}`}>
+                      {editandoSetor === s.id ? (
+                        <>
+                          <Input
+                            value={editNomeSetor}
+                            onChange={e => setEditNomeSetor(e.target.value)}
+                            className="flex-1 h-8 text-sm"
+                            autoFocus
+                            onKeyDown={e => {
+                              if (e.key === 'Enter') salvarEdicaoSetor(s.id);
+                              if (e.key === 'Escape') setEditandoSetor(null);
+                            }}
+                          />
+                          <Button size="icon" variant="ghost" className="h-7 w-7 text-success" onClick={() => salvarEdicaoSetor(s.id)}>
+                            <Check className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => setEditandoSetor(null)}>
+                            <X className="h-3.5 w-3.5" />
+                          </Button>
+                        </>
+                      ) : (
+                        <>
+                          <span className={`flex-1 text-sm ${!s.ativo ? 'line-through text-muted-foreground' : ''}`}>{s.nome}</span>
+                          {!s.ativo && (
+                            <Badge variant="secondary" className="text-xs h-5">Inativo</Badge>
+                          )}
+                          {s.ativo && (
+                            <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => { setEditandoSetor(s.id); setEditNomeSetor(s.nome); }}>
+                              <Pencil className="h-3.5 w-3.5" />
+                            </Button>
+                          )}
+                          <Button
+                            size="icon" variant="ghost"
+                            className={`h-7 w-7 ${s.ativo ? 'text-destructive hover:text-destructive' : 'text-green-600 hover:text-green-700'}`}
+                            onClick={() => setSetorToggle(s)}
+                            title={s.ativo ? 'Desativar setor' : 'Reativar setor'}
+                          >
+                            <PowerOff className="h-3.5 w-3.5" />
+                          </Button>
+                        </>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                {setores.some(s => !s.ativo) && (
+                  <button
+                    type="button"
+                    className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                    onClick={() => setMostrarInativos(p => !p)}
+                  >
+                    {mostrarInativos
+                      ? 'Ocultar inativos'
+                      : `Mostrar inativos (${setores.filter(s => !s.ativo).length})`}
+                  </button>
+                )}
+              </>
             )}
           </div>
 
@@ -421,19 +439,26 @@ export default function CadastroCliente() {
         </DialogContent>
       </Dialog>
 
-      {/* Confirmar delete setor */}
-      <AlertDialog open={!!deletandoSetor} onOpenChange={o => !o && setDeletandoSetor(null)}>
+      {/* Confirmar toggle ativo/inativo do setor */}
+      <AlertDialog open={!!setorToggle} onOpenChange={o => !o && setSetorToggle(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Remover setor</AlertDialogTitle>
+            <AlertDialogTitle>
+              {setorToggle?.ativo ? 'Desativar setor' : 'Reativar setor'}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              Deseja remover o setor "{deletandoSetor?.nome}"? Esta ação não pode ser desfeita.
+              {setorToggle?.ativo
+                ? `Deseja desativar o setor "${setorToggle?.nome}"? Ele ficará oculto no sistema, mas os dados serão preservados.`
+                : `Deseja reativar o setor "${setorToggle?.nome}"? Ele voltará a aparecer normalmente no sistema.`}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancelar</AlertDialogCancel>
-            <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={confirmarDeleteSetor}>
-              Remover
+            <AlertDialogAction
+              className={setorToggle?.ativo ? 'bg-destructive text-destructive-foreground hover:bg-destructive/90' : ''}
+              onClick={toggleAtivoSetor}
+            >
+              {setorToggle?.ativo ? 'Desativar' : 'Reativar'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

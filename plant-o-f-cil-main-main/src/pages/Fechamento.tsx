@@ -8,7 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
 import {
-  Download, FileText, Eye, Send, CheckCircle, AlertCircle, Clock, RefreshCw, SendHorizonal, X,
+  Download, FileText, Eye, Send, CheckCircle, AlertCircle, Clock, RefreshCw, SendHorizonal, X, Receipt,
 } from 'lucide-react';
 import { formatCurrency, profissaoLabel, tipoPlantaoLabel } from '@/lib/format';
 import { exportarRelatorioExcel } from '@/lib/exportExcel';
@@ -38,6 +38,7 @@ interface Cooperado {
   profissao?: string;
   rg?: string | null;
   pis_inss?: string | null;
+  pix?: string | null;
 }
 
 type StatusRPA = 'pendente' | 'enviado' | 'erro';
@@ -727,6 +728,153 @@ function AbaRPA({ rows, hospitals, cooperados, periodoLabel }: { rows: LancRow[]
 
   const cancelarEnvio = () => { abortRef.cancelado = true; };
 
+  const gerarDemonstrativoPDF = async () => {
+    // Paisagem para acomodar todas as colunas com conforto
+    const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+    const W = doc.internal.pageSize.getWidth();   // 297mm
+    const H = doc.internal.pageSize.getHeight();  // 210mm
+    const ML = 14; const MR = 14;
+    const CW = W - ML - MR; // 269mm úteis
+
+    // ── Carregar logo ──
+    let logoDataUrl: string | null = null;
+    try {
+      const resp = await fetch('/cades-logo.png');
+      const blob = await resp.blob();
+      logoDataUrl = await new Promise<string>(res => {
+        const reader = new FileReader();
+        reader.onloadend = () => res(reader.result as string);
+        reader.readAsDataURL(blob);
+      });
+    } catch { /* opcional */ }
+
+    // ── Cabeçalho ──
+    const headerH = 36;
+    doc.setFillColor(232, 242, 252);
+    doc.rect(0, 0, W, headerH, 'F');
+    doc.setFillColor(212, 229, 247);
+    doc.rect(0, headerH * 0.55, W, headerH * 0.45, 'F');
+    doc.setFillColor(26, 47, 90);
+    doc.rect(0, headerH - 2, W, 2, 'F');
+
+    // Logo à esquerda
+    if (logoDataUrl) {
+      const logoH = 24; const logoW = logoH * (290 / 140);
+      doc.addImage(logoDataUrl, 'PNG', ML, (headerH - logoH) / 2, logoW, logoH);
+    } else {
+      doc.setTextColor(26, 47, 90); doc.setFontSize(18); doc.setFont('helvetica', 'bold');
+      doc.text('CADES', ML, 18);
+    }
+
+    // Título centralizado
+    doc.setTextColor(26, 47, 90); doc.setFontSize(15); doc.setFont('helvetica', 'bold');
+    doc.text('Demonstrativo de Pagamento', W / 2, headerH / 2 - 2, { align: 'center' });
+    doc.setFontSize(9); doc.setFont('helvetica', 'normal'); doc.setTextColor(74, 74, 74);
+    doc.text(`Competência: ${periodoLabel}  ·  ${filtered.length} cooperado${filtered.length !== 1 ? 's' : ''}`, W / 2, headerH / 2 + 5, { align: 'center' });
+
+    // Data à direita
+    doc.setFontSize(8); doc.setTextColor(122, 122, 122);
+    doc.text(`Emitido em ${new Date().toLocaleDateString('pt-BR')}`, W - MR, headerH / 2 + 5, { align: 'right' });
+
+    // ── Dados ──
+    let totalBruto = 0; let totalINSS = 0; let totalCota = 0; let totalLiquido = 0;
+    const tableBody = filtered.map(({ cooperado, lancamentos }) => {
+      const bruto   = lancamentos.reduce((s, r) => s + Number(r.valor_repasse_cooperado), 0);
+      const inss    = bruto * PERCENTUAL_INSS;
+      const cota    = DESCONTO_COTA_PARTE;
+      const liquido = bruto - inss - cota;
+      totalBruto   += bruto;
+      totalINSS    += inss;
+      totalCota    += cota;
+      totalLiquido += liquido;
+      return [
+        cooperado.nome,
+        String(lancamentos.length),
+        fmt(bruto),
+        `(${fmt(inss)})`,
+        `(${fmt(cota)})`,
+        fmt(liquido),
+        cooperado.pix ?? '—',
+      ];
+    });
+
+    // Distribuição das colunas: total = 269mm
+    // Nome=75 | Plt=12 | Bruto=35 | INSS=35 | Cota=30 | Líquido=35 | PIX=47
+    autoTable(doc, {
+      startY: headerH + 6,
+      head: [['Cooperado(a)', 'Plt.', 'Valor Bruto', 'INSS 20%', 'Cota Parte', 'Valor Líquido', 'Chave PIX']],
+      body: tableBody,
+      foot: [[
+        { content: 'TOTAL GERAL', colSpan: 2, styles: { halign: 'right', fontStyle: 'bold' } },
+        { content: fmt(totalBruto),       styles: { halign: 'right', fontStyle: 'bold' } },
+        { content: `(${fmt(totalINSS)})`, styles: { halign: 'right', fontStyle: 'bold', textColor: [180, 40, 40] } },
+        { content: `(${fmt(totalCota)})`, styles: { halign: 'right', fontStyle: 'bold', textColor: [180, 40, 40] } },
+        { content: fmt(totalLiquido),     styles: { halign: 'right', fontStyle: 'bold', textColor: [26, 47, 90] } },
+        { content: '' },
+      ]],
+      styles: { fontSize: 9, cellPadding: 3.5, valign: 'middle' },
+      headStyles: {
+        fillColor: [26, 47, 90], textColor: 255, fontStyle: 'bold',
+        fontSize: 8, cellPadding: 4, valign: 'middle', halign: 'center',
+      },
+      footStyles: {
+        fillColor: [235, 240, 255], textColor: [26, 26, 26],
+        fontStyle: 'bold', fontSize: 9, cellPadding: 4,
+      },
+      columnStyles: {
+        0: { cellWidth: 75, valign: 'middle' },
+        1: { cellWidth: 12, halign: 'center', valign: 'middle' },
+        2: { cellWidth: 35, halign: 'right', valign: 'middle' },
+        3: { cellWidth: 35, halign: 'right', valign: 'middle', textColor: [180, 40, 40] },
+        4: { cellWidth: 30, halign: 'right', valign: 'middle', textColor: [180, 40, 40] },
+        5: { cellWidth: 35, halign: 'right', valign: 'middle', textColor: [26, 47, 90], fontStyle: 'bold' },
+        6: { cellWidth: CW - 75 - 12 - 35 - 35 - 30 - 35, valign: 'middle', fontSize: 8, textColor: [60, 60, 60] },
+      },
+      alternateRowStyles: { fillColor: [248, 250, 255] },
+      margin: { left: ML, right: MR },
+      rowPageBreak: 'avoid',
+    });
+
+    // ── Resumo financeiro ──
+    const tY: number = (doc as any).lastAutoTable.finalY + 8;
+    if (tY < H - 32) {
+      const bW = CW / 4; const bH = 20;
+      const resumo = [
+        { label: 'Total Bruto',      value: fmt(totalBruto),   cor: [26, 47, 90]  as [number,number,number] },
+        { label: 'Total INSS (20%)', value: fmt(totalINSS),    cor: [180, 40, 40] as [number,number,number] },
+        { label: 'Total Cota Parte', value: fmt(totalCota),    cor: [180, 40, 40] as [number,number,number] },
+        { label: 'Total Líquido',    value: fmt(totalLiquido), cor: [16, 100, 50]  as [number,number,number] },
+      ];
+      resumo.forEach((r, i) => {
+        const x = ML + i * bW;
+        const isLiq = i === 3;
+        if (isLiq) {
+          doc.setFillColor(26, 47, 90); doc.rect(x, tY, bW - 3, bH, 'F');
+          doc.setFontSize(7.5); doc.setFont('helvetica', 'normal'); doc.setTextColor(180, 210, 255);
+          doc.text(r.label.toUpperCase(), x + 4, tY + 7);
+          doc.setFontSize(11); doc.setFont('helvetica', 'bold'); doc.setTextColor(255, 255, 255);
+          doc.text(r.value, x + 4, tY + 15);
+        } else {
+          doc.setFillColor(248, 249, 252); doc.rect(x, tY, bW - 3, bH, 'F');
+          doc.setDrawColor(210, 220, 235); doc.rect(x, tY, bW - 3, bH);
+          doc.setFontSize(7.5); doc.setFont('helvetica', 'normal'); doc.setTextColor(100, 110, 130);
+          doc.text(r.label.toUpperCase(), x + 4, tY + 7);
+          doc.setFontSize(11); doc.setFont('helvetica', 'bold'); doc.setTextColor(...r.cor);
+          doc.text(r.value, x + 4, tY + 15);
+        }
+      });
+    }
+
+    // ── Rodapé ──
+    doc.setFillColor(26, 47, 90); doc.rect(0, H - 10, W, 10, 'F');
+    doc.setTextColor(200, 210, 255); doc.setFontSize(7.5); doc.setFont('helvetica', 'normal');
+    doc.text('CADES — Cooperativa Assistencial de Trabalho do Espírito Santo — Demonstrativo de Pagamento', ML, H - 3.5);
+    doc.text(`${filtered.length} cooperados · ${periodoLabel}`, W - MR, H - 3.5, { align: 'right' });
+
+    const slug = (s: string) => s.replace(/[^a-zA-Z0-9]/g, '_');
+    doc.save(`Demonstrativo_Pagamento_${slug(periodoLabel)}.pdf`);
+  };
+
   const rowsFiltrados = useMemo(() =>
     filterHospital === 'all' ? rows : rows.filter(r => r.hospitals?.id === filterHospital),
     [rows, filterHospital],
@@ -745,6 +893,7 @@ function AbaRPA({ rows, hospitals, cooperados, periodoLabel }: { rows: LancRow[]
             cpf: coopExtra?.cpf,
             email: coopExtra?.email,
             profissao: coopExtra?.profissao ?? r.profissao,
+            pix: coopExtra?.pix,
           },
           lancamentos: [],
         };
@@ -797,7 +946,17 @@ function AbaRPA({ rows, hospitals, cooperados, periodoLabel }: { rows: LancRow[]
             <Badge className="gap-1.5 bg-green-600 hover:bg-green-700"><CheckCircle className="h-3 w-3" /> Enviado: {statusCounts.enviado}</Badge>
             {statusCounts.erro > 0 && <Badge variant="destructive" className="gap-1.5"><AlertCircle className="h-3 w-3" /> Erro: {statusCounts.erro}</Badge>}
           </div>
-          <div className="ml-auto pb-0.5">
+          <div className="ml-auto pb-0.5 flex gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-2 border-[#1a2f5a] text-[#1a2f5a] hover:bg-[#1a2f5a] hover:text-white"
+              onClick={() => { void gerarDemonstrativoPDF(); }}
+              disabled={filtered.length === 0}
+            >
+              <Receipt className="h-3.5 w-3.5" />
+              Demonstrativo de Pagamento
+            </Button>
             <Button
               size="sm"
               className="gap-2 bg-blue-700 hover:bg-blue-800"
@@ -1104,7 +1263,7 @@ export default function Fechamento() {
   useEffect(() => {
     supabase.from('hospitals').select('id, nome').order('nome').then(({ data }) => setHospitals(data ?? []));
     supabase.from('sectors').select('id, nome, hospital_id').order('nome').then(({ data }) => setSectors(data ?? []));
-    supabase.from('cooperados').select('id, nome, cpf, email, profissao, rg, pis_inss').order('nome')
+    supabase.from('cooperados').select('id, nome, cpf, email, profissao, rg, pis_inss, pix').order('nome')
       .then(({ data }) => setCooperados((data ?? []) as Cooperado[]));
   }, []);
 
