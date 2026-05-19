@@ -681,10 +681,16 @@ function CardCooperadoRPA({ cooperado, lancamentos, periodoLabel, status, onStat
 
 // ─── Aba RPA ──────────────────────────────────────────────────────────────────
 
-function AbaRPA({ rows, hospitals, cooperados, periodoLabel }: { rows: LancRow[]; hospitals: Hospital[]; cooperados: Cooperado[]; periodoLabel: string; }) {
+function AbaRPA({ rows, hospitals, sectors, cooperados, periodoLabel }: { rows: LancRow[]; hospitals: Hospital[]; sectors: Sector[]; cooperados: Cooperado[]; periodoLabel: string; }) {
   const [rpaStatus, setRpaStatus] = useState<Record<string, StatusRPA>>({});
   const [filterHospital, setFilterHospital] = useState('all');
+  const [filterSetor, setFilterSetor] = useState('all');
   const [filterCooperado, setFilterCooperado] = useState('all');
+
+  const setoresFiltrados = useMemo(
+    () => filterHospital === 'all' ? sectors : sectors.filter(s => s.hospital_id === filterHospital),
+    [sectors, filterHospital],
+  );
 
   // ── Envio em massa ──
   type ProgressoEnvio = { total: number; atual: number; enviados: number; erros: number; nomAtual: string; concluido: boolean };
@@ -875,10 +881,11 @@ function AbaRPA({ rows, hospitals, cooperados, periodoLabel }: { rows: LancRow[]
     doc.save(`Demonstrativo_Pagamento_${slug(periodoLabel)}.pdf`);
   };
 
-  const rowsFiltrados = useMemo(() =>
-    filterHospital === 'all' ? rows : rows.filter(r => r.hospitals?.id === filterHospital),
-    [rows, filterHospital],
-  );
+  const rowsFiltrados = useMemo(() => rows.filter(r => {
+    if (filterHospital !== 'all' && r.hospitals?.id !== filterHospital) return false;
+    if (filterSetor !== 'all' && r.sectors?.id !== filterSetor) return false;
+    return true;
+  }), [rows, filterHospital, filterSetor]);
 
   const gruposPorCooperado = useMemo(() => {
     const map: Record<string, { cooperado: Cooperado; lancamentos: LancRow[] }> = {};
@@ -928,11 +935,21 @@ function AbaRPA({ rows, hospitals, cooperados, periodoLabel }: { rows: LancRow[]
         <CardContent className="p-4 flex flex-wrap gap-3 items-end">
           <div className="min-w-[200px]">
             <Label className="text-xs">Cliente</Label>
-            <Select value={filterHospital} onValueChange={v => { setFilterHospital(v); setFilterCooperado('all'); }}>
+            <Select value={filterHospital} onValueChange={v => { setFilterHospital(v); setFilterSetor('all'); setFilterCooperado('all'); }}>
               <SelectTrigger><SelectValue placeholder="Todos" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">Todos os clientes</SelectItem>
                 {hospitals.map(h => <SelectItem key={h.id} value={h.id}>{h.nome}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="min-w-[200px]">
+            <Label className="text-xs">Setor</Label>
+            <Select value={filterSetor} onValueChange={v => { setFilterSetor(v); setFilterCooperado('all'); }}>
+              <SelectTrigger><SelectValue placeholder="Todos" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Todos os setores</SelectItem>
+                {setoresFiltrados.map(s => <SelectItem key={s.id} value={s.id}>{s.nome}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
@@ -1306,7 +1323,7 @@ export default function Fechamento() {
             <AbaRepasse rows={rows} hospitals={hospitals} sectors={sectors} cooperados={cooperados} periodoLabel={periodoCalc.label} />
           </TabsContent>
           <TabsContent value="rpa" className="mt-4">
-            <AbaRPA rows={rows} hospitals={hospitals} cooperados={cooperados} periodoLabel={periodoCalc.label} />
+            <AbaRPA rows={rows} hospitals={hospitals} sectors={sectors} cooperados={cooperados} periodoLabel={periodoCalc.label} />
           </TabsContent>
         </Tabs>
       )}
