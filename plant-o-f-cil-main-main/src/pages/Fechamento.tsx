@@ -1257,7 +1257,6 @@ export default function Fechamento() {
         .select('id, data_plantao, total_horas, profissao, tipo_plantao, status, valor_cobrado_cliente, valor_repasse_cooperado, cooperados(id, nome), hospitals(id, nome), sectors(id, nome)')
         .gte('data_plantao', inicio)
         .lte('data_plantao', fim)
-        .in('status', ['aprovado', 'faturado', 'pago'])
         .order('data_plantao', { ascending: true })
         .range(from, from + PAGE - 1);
 
