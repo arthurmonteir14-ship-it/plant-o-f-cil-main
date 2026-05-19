@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -329,8 +329,10 @@ export default function Relatorios() {
   const [filterProfissao, setFilterProfissao] = useState('all');
 
   const periodoCalc = useMemo(() => calcPeriodo(periodo), [periodo]);
+  const fetchIdRef = useRef(0);
 
   const fetchRows = useCallback(async () => {
+    const myId = ++fetchIdRef.current;
     setLoading(true);
     const PAGE = 1000;
     let all: LancRow[] = [];
@@ -343,11 +345,13 @@ export default function Relatorios() {
         .lte('data_plantao', periodoCalc.fim)
         .order('data_plantao', { ascending: true })
         .range(from, from + PAGE - 1);
+      if (myId !== fetchIdRef.current) return;
       if (error) { toast.error('Erro ao carregar relatórios: ' + error.message); break; }
       all = [...all, ...((data ?? []) as unknown as LancRow[])];
       if (!data || data.length < PAGE) break;
       from += PAGE;
     }
+    if (myId !== fetchIdRef.current) return;
     setRows(all);
     setLoading(false);
   }, [periodoCalc.inicio, periodoCalc.fim]);

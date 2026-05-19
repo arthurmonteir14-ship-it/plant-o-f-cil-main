@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -1231,9 +1231,11 @@ export default function Fechamento() {
   const [sectors, setSectors] = useState<Sector[]>([]);
   const [cooperados, setCooperados] = useState<Cooperado[]>([]);
 
-  const periodoCalc = calcPeriodo(periodo);
+  const periodoCalc = useMemo(() => calcPeriodo(periodo), [periodo]);
+  const fetchIdRef = useRef(0);
 
-  const load = async () => {
+  const load = async (inicio: string, fim: string) => {
+    const myId = ++fetchIdRef.current;
     setLoading(true);
     const PAGE = 1000;
     let allRows: LancRow[] = [];
@@ -1243,22 +1245,24 @@ export default function Fechamento() {
       const { data } = await supabase
         .from('lancamentos_plantoes')
         .select('id, data_plantao, total_horas, profissao, tipo_plantao, valor_cobrado_cliente, valor_repasse_cooperado, cooperados(id, nome), hospitals(id, nome), sectors(id, nome)')
-        .gte('data_plantao', periodoCalc.inicio)
-        .lte('data_plantao', periodoCalc.fim)
+        .gte('data_plantao', inicio)
+        .lte('data_plantao', fim)
         .order('data_plantao', { ascending: true })
         .range(from, from + PAGE - 1);
 
+      if (myId !== fetchIdRef.current) return;
       const page = (data ?? []) as unknown as LancRow[];
       allRows = [...allRows, ...page];
       if (page.length < PAGE) break;
       from += PAGE;
     }
 
+    if (myId !== fetchIdRef.current) return;
     setRows(allRows);
     setLoading(false);
   };
 
-  useEffect(() => { load(); }, [periodoCalc.inicio, periodoCalc.fim]);
+  useEffect(() => { load(periodoCalc.inicio, periodoCalc.fim); }, [periodoCalc.inicio, periodoCalc.fim]);
 
   useEffect(() => {
     supabase.from('hospitals').select('id, nome').order('nome').then(({ data }) => setHospitals(data ?? []));
