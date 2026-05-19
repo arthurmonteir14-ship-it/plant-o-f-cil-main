@@ -22,7 +22,7 @@ import autoTable from 'jspdf-autotable';
 
 interface LancRow {
   id: string; data_plantao: string; total_horas: number;
-  profissao: string; tipo_plantao: string;
+  profissao: string; tipo_plantao: string; status: string;
   valor_cobrado_cliente: number; valor_repasse_cooperado: number;
   cooperados: { id: string; nome: string } | null;
   hospitals: { id: string; nome: string } | null;
@@ -906,9 +906,14 @@ function AbaRPA({ rows, hospitals, cooperados, periodoLabel }: { rows: LancRow[]
   const filtered = useMemo(() => filterCooperado === 'all' ? gruposPorCooperado : gruposPorCooperado.filter(g => g.cooperado.id === filterCooperado), [gruposPorCooperado, filterCooperado]);
 
   const totais = useMemo(() => {
-    let bruto = 0, liquido = 0;
-    filtered.forEach(({ lancamentos }) => { const b = lancamentos.reduce((s, r) => s + Number(r.valor_repasse_cooperado), 0); bruto += b; liquido += b - b * PERCENTUAL_INSS - DESCONTO_COTA_PARTE; });
-    return { bruto, inss: bruto * PERCENTUAL_INSS, liquido };
+    let bruto = 0;
+    filtered.forEach(({ lancamentos }) => {
+      bruto += lancamentos.reduce((s, r) => s + Number(r.valor_repasse_cooperado), 0);
+    });
+    const inss = bruto * PERCENTUAL_INSS;
+    const cotaParte = DESCONTO_COTA_PARTE * filtered.length;
+    const liquido = bruto - inss - cotaParte;
+    return { bruto, inss, cotaParte, liquido };
   }, [filtered]);
 
   const statusCounts = useMemo(() => {
@@ -1014,8 +1019,13 @@ function AbaRPA({ rows, hospitals, cooperados, periodoLabel }: { rows: LancRow[]
           </CardContent>
         </Card>
       )}
-      <div className="grid grid-cols-3 gap-3">
-        {[{ label: 'Total Bruto', value: fmt(totais.bruto) }, { label: 'INSS Total (20%)', value: fmt(totais.inss) }, { label: 'Total Líquido', value: fmt(totais.liquido) }].map(c => (
+      <div className="grid grid-cols-4 gap-3">
+        {[
+          { label: 'Total Bruto', value: fmt(totais.bruto) },
+          { label: 'INSS (20%)', value: `- ${fmt(totais.inss)}` },
+          { label: `Cota Parte (${filtered.length}×R$${DESCONTO_COTA_PARTE})`, value: `- ${fmt(totais.cotaParte)}` },
+          { label: 'Total Líquido', value: fmt(totais.liquido) },
+        ].map(c => (
           <Card key={c.label}><CardContent className="p-4">
             <p className="text-xs uppercase tracking-wider text-muted-foreground">{c.label}</p>
             <p className="text-lg font-bold tabular-nums text-accent mt-0.5">{c.value}</p>
@@ -1244,9 +1254,10 @@ export default function Fechamento() {
     while (true) {
       const { data } = await supabase
         .from('lancamentos_plantoes')
-        .select('id, data_plantao, total_horas, profissao, tipo_plantao, valor_cobrado_cliente, valor_repasse_cooperado, cooperados(id, nome), hospitals(id, nome), sectors(id, nome)')
+        .select('id, data_plantao, total_horas, profissao, tipo_plantao, status, valor_cobrado_cliente, valor_repasse_cooperado, cooperados(id, nome), hospitals(id, nome), sectors(id, nome)')
         .gte('data_plantao', inicio)
         .lte('data_plantao', fim)
+        .in('status', ['aprovado', 'faturado', 'pago'])
         .order('data_plantao', { ascending: true })
         .range(from, from + PAGE - 1);
 

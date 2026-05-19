@@ -14,7 +14,7 @@ import autoTable from 'jspdf-autotable';
 
 interface LancRow {
   id: string; data_plantao: string; total_horas: number;
-  profissao: string; tipo_plantao: string;
+  profissao: string; tipo_plantao: string; status: string;
   valor_cobrado_cliente: number; valor_repasse_cooperado: number;
   cooperados: { id: string; nome: string } | null;
   hospitals: { id: string; nome: string } | null;
@@ -340,9 +340,10 @@ export default function Relatorios() {
     while (true) {
       const { data, error } = await supabase
         .from('lancamentos_plantoes')
-        .select('id, data_plantao, total_horas, profissao, tipo_plantao, valor_cobrado_cliente, valor_repasse_cooperado, cooperados(id, nome), hospitals(id, nome), sectors(id, nome)')
+        .select('id, data_plantao, total_horas, profissao, tipo_plantao, status, valor_cobrado_cliente, valor_repasse_cooperado, cooperados(id, nome), hospitals(id, nome), sectors(id, nome)')
         .gte('data_plantao', periodoCalc.inicio)
         .lte('data_plantao', periodoCalc.fim)
+        .in('status', ['aprovado', 'faturado', 'pago'])
         .order('data_plantao', { ascending: true })
         .range(from, from + PAGE - 1);
       if (myId !== fetchIdRef.current) return;
