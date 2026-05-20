@@ -686,6 +686,8 @@ function AbaRPA({ rows, hospitals, sectors, cooperados, periodoLabel }: { rows: 
   const [filterHospital, setFilterHospital] = useState('all');
   const [filterSetor, setFilterSetor] = useState('all');
   const [filterCooperado, setFilterCooperado] = useState('all');
+  const [descInss, setDescInss] = useState(true);
+  const [descCotaParte, setDescCotaParte] = useState(true);
 
   const setoresFiltrados = useMemo(
     () => filterHospital === 'all' ? sectors : sectors.filter(s => s.hospital_id === filterHospital),
@@ -734,13 +736,16 @@ function AbaRPA({ rows, hospitals, sectors, cooperados, periodoLabel }: { rows: 
 
   const cancelarEnvio = () => { abortRef.cancelado = true; };
 
+  const nomeCliente = filterHospital !== 'all'
+    ? (hospitals.find(h => h.id === filterHospital)?.nome ?? '')
+    : '';
+
   const gerarDemonstrativoPDF = async () => {
-    // Paisagem para acomodar todas as colunas com conforto
     const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
-    const W = doc.internal.pageSize.getWidth();   // 297mm
-    const H = doc.internal.pageSize.getHeight();  // 210mm
+    const W = doc.internal.pageSize.getWidth();
+    const H = doc.internal.pageSize.getHeight();
     const ML = 14; const MR = 14;
-    const CW = W - ML - MR; // 269mm úteis
+    const CW = W - ML - MR;
 
     // ── Carregar logo ──
     let logoDataUrl: string | null = null;
@@ -755,7 +760,7 @@ function AbaRPA({ rows, hospitals, sectors, cooperados, periodoLabel }: { rows: 
     } catch { /* opcional */ }
 
     // ── Cabeçalho ──
-    const headerH = 36;
+    const headerH = nomeCliente ? 42 : 36;
     doc.setFillColor(232, 242, 252);
     doc.rect(0, 0, W, headerH, 'F');
     doc.setFillColor(212, 229, 247);
@@ -763,7 +768,6 @@ function AbaRPA({ rows, hospitals, sectors, cooperados, periodoLabel }: { rows: 
     doc.setFillColor(26, 47, 90);
     doc.rect(0, headerH - 2, W, 2, 'F');
 
-    // Logo à esquerda
     if (logoDataUrl) {
       const logoH = 24; const logoW = logoH * (290 / 140);
       doc.addImage(logoDataUrl, 'PNG', ML, (headerH - logoH) / 2, logoW, logoH);
@@ -772,70 +776,85 @@ function AbaRPA({ rows, hospitals, sectors, cooperados, periodoLabel }: { rows: 
       doc.text('CADES', ML, 18);
     }
 
-    // Título centralizado
+    // Título
     doc.setTextColor(26, 47, 90); doc.setFontSize(15); doc.setFont('helvetica', 'bold');
-    doc.text('Demonstrativo de Pagamento', W / 2, headerH / 2 - 2, { align: 'center' });
+    doc.text('Demonstrativo de Pagamento', W / 2, nomeCliente ? 10 : headerH / 2 - 2, { align: 'center' });
     doc.setFontSize(9); doc.setFont('helvetica', 'normal'); doc.setTextColor(74, 74, 74);
-    doc.text(`Competência: ${periodoLabel}  ·  ${filtered.length} cooperado${filtered.length !== 1 ? 's' : ''}`, W / 2, headerH / 2 + 5, { align: 'center' });
+    const subtitulo = nomeCliente
+      ? `Cliente: ${nomeCliente}  ·  Competência: ${periodoLabel}  ·  ${filtered.length} cooperado${filtered.length !== 1 ? 's' : ''}`
+      : `Competência: ${periodoLabel}  ·  ${filtered.length} cooperado${filtered.length !== 1 ? 's' : ''}`;
+    doc.text(subtitulo, W / 2, nomeCliente ? 17 : headerH / 2 + 5, { align: 'center' });
 
-    // Data à direita
+    // Descontos aplicados
+    if (descInss || descCotaParte) {
+      const descs = [descInss && 'INSS 20%', descCotaParte && `Cota Parte R$${DESCONTO_COTA_PARTE}`].filter(Boolean).join(' + ');
+      doc.setFontSize(7.5); doc.setTextColor(120, 80, 20);
+      doc.text(`Descontos aplicados: ${descs}`, W / 2, nomeCliente ? 23 : headerH / 2 + 11, { align: 'center' });
+    }
+
     doc.setFontSize(8); doc.setTextColor(122, 122, 122);
-    doc.text(`Emitido em ${new Date().toLocaleDateString('pt-BR')}`, W - MR, headerH / 2 + 5, { align: 'right' });
+    doc.text(`Emitido em ${new Date().toLocaleDateString('pt-BR')}`, W - MR, nomeCliente ? 10 : headerH / 2 + 5, { align: 'right' });
 
     // ── Dados ──
     let totalBruto = 0; let totalINSS = 0; let totalCota = 0; let totalLiquido = 0;
     const tableBody = filtered.map(({ cooperado, lancamentos }) => {
       const bruto   = lancamentos.reduce((s, r) => s + Number(r.valor_repasse_cooperado), 0);
-      const inss    = bruto * PERCENTUAL_INSS;
-      const cota    = DESCONTO_COTA_PARTE;
+      const inss    = descInss    ? bruto * PERCENTUAL_INSS : 0;
+      const cota    = descCotaParte ? DESCONTO_COTA_PARTE    : 0;
       const liquido = bruto - inss - cota;
       totalBruto   += bruto;
       totalINSS    += inss;
       totalCota    += cota;
       totalLiquido += liquido;
-      return [
-        cooperado.nome,
-        String(lancamentos.length),
-        fmt(bruto),
-        `(${fmt(inss)})`,
-        `(${fmt(cota)})`,
-        fmt(liquido),
-        cooperado.pix ?? '—',
-      ];
+
+      const row: (string | number)[] = [cooperado.nome, String(lancamentos.length), fmt(bruto)];
+      if (descInss)      row.push(`(${fmt(inss)})`);
+      if (descCotaParte) row.push(`(${fmt(cota)})`);
+      row.push(fmt(liquido), cooperado.pix ?? '—');
+      return row;
     });
 
-    // Distribuição das colunas: total = 269mm
-    // Nome=75 | Plt=12 | Bruto=35 | INSS=35 | Cota=30 | Líquido=35 | PIX=47
+    // Larguras dinâmicas conforme descontos selecionados
+    const fixo = 75 + 12 + 47; // Nome + Plt + PIX
+    const nDesc = (descInss ? 1 : 0) + (descCotaParte ? 1 : 0);
+    const valorCols = 2 + nDesc; // Bruto + descontos + Líquido
+    const wValor = Math.floor((CW - fixo) / valorCols);
+    const wPix   = CW - fixo - wValor * valorCols;
+
+    const head: string[] = ['Cooperado(a)', 'Plt.', 'Valor Bruto'];
+    if (descInss)      head.push('INSS 20%');
+    if (descCotaParte) head.push('Cota Parte');
+    head.push('Valor Líquido', 'Chave PIX');
+
+    const footRow: object[] = [
+      { content: 'TOTAL GERAL', colSpan: 2, styles: { halign: 'right', fontStyle: 'bold' } },
+      { content: fmt(totalBruto), styles: { halign: 'right', fontStyle: 'bold' } },
+    ];
+    if (descInss)      footRow.push({ content: `(${fmt(totalINSS)})`, styles: { halign: 'right', fontStyle: 'bold', textColor: [180, 40, 40] } });
+    if (descCotaParte) footRow.push({ content: `(${fmt(totalCota)})`, styles: { halign: 'right', fontStyle: 'bold', textColor: [180, 40, 40] } });
+    footRow.push({ content: fmt(totalLiquido), styles: { halign: 'right', fontStyle: 'bold', textColor: [26, 47, 90] } });
+    footRow.push({ content: '' });
+
+    const colStyles: Record<number, object> = {
+      0: { cellWidth: 75, valign: 'middle' },
+      1: { cellWidth: 12, halign: 'center', valign: 'middle' },
+    };
+    let ci = 2;
+    colStyles[ci++] = { cellWidth: wValor, halign: 'right', valign: 'middle' }; // Bruto
+    if (descInss)      colStyles[ci++] = { cellWidth: wValor, halign: 'right', valign: 'middle', textColor: [180, 40, 40] };
+    if (descCotaParte) colStyles[ci++] = { cellWidth: wValor, halign: 'right', valign: 'middle', textColor: [180, 40, 40] };
+    colStyles[ci++] = { cellWidth: wValor, halign: 'right', valign: 'middle', textColor: [26, 47, 90], fontStyle: 'bold' };
+    colStyles[ci]   = { cellWidth: 47 + wPix, valign: 'middle', fontSize: 8, textColor: [60, 60, 60] };
+
     autoTable(doc, {
       startY: headerH + 6,
-      head: [['Cooperado(a)', 'Plt.', 'Valor Bruto', 'INSS 20%', 'Cota Parte', 'Valor Líquido', 'Chave PIX']],
+      head: [head],
       body: tableBody,
-      foot: [[
-        { content: 'TOTAL GERAL', colSpan: 2, styles: { halign: 'right', fontStyle: 'bold' } },
-        { content: fmt(totalBruto),       styles: { halign: 'right', fontStyle: 'bold' } },
-        { content: `(${fmt(totalINSS)})`, styles: { halign: 'right', fontStyle: 'bold', textColor: [180, 40, 40] } },
-        { content: `(${fmt(totalCota)})`, styles: { halign: 'right', fontStyle: 'bold', textColor: [180, 40, 40] } },
-        { content: fmt(totalLiquido),     styles: { halign: 'right', fontStyle: 'bold', textColor: [26, 47, 90] } },
-        { content: '' },
-      ]],
+      foot: [footRow],
       styles: { fontSize: 9, cellPadding: 3.5, valign: 'middle' },
-      headStyles: {
-        fillColor: [26, 47, 90], textColor: 255, fontStyle: 'bold',
-        fontSize: 8, cellPadding: 4, valign: 'middle', halign: 'center',
-      },
-      footStyles: {
-        fillColor: [235, 240, 255], textColor: [26, 26, 26],
-        fontStyle: 'bold', fontSize: 9, cellPadding: 4,
-      },
-      columnStyles: {
-        0: { cellWidth: 75, valign: 'middle' },
-        1: { cellWidth: 12, halign: 'center', valign: 'middle' },
-        2: { cellWidth: 35, halign: 'right', valign: 'middle' },
-        3: { cellWidth: 35, halign: 'right', valign: 'middle', textColor: [180, 40, 40] },
-        4: { cellWidth: 30, halign: 'right', valign: 'middle', textColor: [180, 40, 40] },
-        5: { cellWidth: 35, halign: 'right', valign: 'middle', textColor: [26, 47, 90], fontStyle: 'bold' },
-        6: { cellWidth: CW - 75 - 12 - 35 - 35 - 30 - 35, valign: 'middle', fontSize: 8, textColor: [60, 60, 60] },
-      },
+      headStyles: { fillColor: [26, 47, 90], textColor: 255, fontStyle: 'bold', fontSize: 8, cellPadding: 4, valign: 'middle', halign: 'center' },
+      footStyles: { fillColor: [235, 240, 255], textColor: [26, 26, 26], fontStyle: 'bold', fontSize: 9, cellPadding: 4 },
+      columnStyles: colStyles,
       alternateRowStyles: { fillColor: [248, 250, 255] },
       margin: { left: ML, right: MR },
       rowPageBreak: 'avoid',
@@ -874,7 +893,10 @@ function AbaRPA({ rows, hospitals, sectors, cooperados, periodoLabel }: { rows: 
     // ── Rodapé ──
     doc.setFillColor(26, 47, 90); doc.rect(0, H - 10, W, 10, 'F');
     doc.setTextColor(200, 210, 255); doc.setFontSize(7.5); doc.setFont('helvetica', 'normal');
-    doc.text('CADES — Cooperativa Assistencial de Trabalho do Espírito Santo — Demonstrativo de Pagamento', ML, H - 3.5);
+    const rodapeEsq = nomeCliente
+      ? `CADES — Demonstrativo de Pagamento · Cliente: ${nomeCliente}`
+      : 'CADES — Cooperativa Assistencial de Trabalho do Espírito Santo — Demonstrativo de Pagamento';
+    doc.text(rodapeEsq, ML, H - 3.5);
     doc.text(`${filtered.length} cooperados · ${periodoLabel}`, W - MR, H - 3.5, { align: 'right' });
 
     const slug = (s: string) => s.replace(/[^a-zA-Z0-9]/g, '_');
@@ -968,7 +990,18 @@ function AbaRPA({ rows, hospitals, sectors, cooperados, periodoLabel }: { rows: 
             <Badge className="gap-1.5 bg-green-600 hover:bg-green-700"><CheckCircle className="h-3 w-3" /> Enviado: {statusCounts.enviado}</Badge>
             {statusCounts.erro > 0 && <Badge variant="destructive" className="gap-1.5"><AlertCircle className="h-3 w-3" /> Erro: {statusCounts.erro}</Badge>}
           </div>
-          <div className="ml-auto pb-0.5 flex gap-2">
+          <div className="ml-auto pb-0.5 flex flex-wrap items-end gap-2">
+            <div className="flex flex-col gap-1 text-xs text-muted-foreground">
+              <span className="font-medium text-foreground">Descontos no demonstrativo:</span>
+              <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                <input type="checkbox" checked={descInss} onChange={e => setDescInss(e.target.checked)} className="accent-[#1a2f5a] h-3.5 w-3.5" />
+                INSS (20%)
+              </label>
+              <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                <input type="checkbox" checked={descCotaParte} onChange={e => setDescCotaParte(e.target.checked)} className="accent-[#1a2f5a] h-3.5 w-3.5" />
+                Cota Parte (R${DESCONTO_COTA_PARTE})
+              </label>
+            </div>
             <Button
               size="sm"
               variant="outline"
