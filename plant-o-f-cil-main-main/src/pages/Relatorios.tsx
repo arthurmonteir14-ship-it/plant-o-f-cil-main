@@ -4,7 +4,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Download, FileBarChart2, FileText, TrendingUp, Users } from 'lucide-react';
+import { Download, Eye, EyeOff, FileBarChart2, FileText, TrendingUp, Users } from 'lucide-react';
 import { toast } from 'sonner';
 import { formatCurrency, profissaoLabel, tipoPlantaoLabel } from '@/lib/format';
 import { PeriodoPicker } from '@/components/PeriodoPicker';
@@ -327,6 +327,7 @@ export default function Relatorios() {
   const [filterSetor, setFilterSetor] = useState('all');
   const [filterCooperado, setFilterCooperado] = useState('all');
   const [filterProfissao, setFilterProfissao] = useState('all');
+  const [mostrarValores, setMostrarValores] = useState(true);
 
   const periodoCalc = useMemo(() => calcPeriodo(periodo), [periodo]);
   const fetchIdRef = useRef(0);
@@ -447,19 +448,15 @@ export default function Relatorios() {
     setor: sectors.find(s => s.id === filterSetor)?.nome ?? '',
   });
 
-  const kpis = isFaturamento
-    ? [
-        { label: 'Diurnos', value: loading ? '—' : String(totalDiurnos) },
-        { label: 'Noturnos', value: loading ? '—' : String(totalNoturnos) },
-        { label: 'Total Plantões', value: loading ? '—' : String(filtered.length) },
-        { label: 'Total faturado', value: loading ? '—' : formatCurrency(totalCliente), highlight: true },
-      ]
-    : [
-        { label: 'Diurnos', value: loading ? '—' : String(totalDiurnos) },
-        { label: 'Noturnos', value: loading ? '—' : String(totalNoturnos) },
-        { label: 'Total Plantões', value: loading ? '—' : String(filtered.length) },
-        { label: 'Total repasse', value: loading ? '—' : formatCurrency(totalCooperado), highlight: true },
-      ];
+  const kpisBase = [
+    { label: 'Diurnos',       value: loading ? '—' : String(totalDiurnos) },
+    { label: 'Noturnos',      value: loading ? '—' : String(totalNoturnos) },
+    { label: 'Total Plantões',value: loading ? '—' : String(filtered.length) },
+  ];
+  const kpiValor = isFaturamento
+    ? { label: 'Total faturado', value: loading ? '—' : formatCurrency(totalCliente), highlight: true }
+    : { label: 'Total repasse',  value: loading ? '—' : formatCurrency(totalCooperado), highlight: true };
+  const kpis = mostrarValores ? [...kpisBase, kpiValor] : kpisBase;
 
   return (
     <div className="space-y-6">
@@ -561,8 +558,25 @@ export default function Relatorios() {
               </Select>
             </div>
           </div>
-          <div className="text-right text-sm text-muted-foreground">
-            {loading ? 'Carregando…' : `${filtered.length} lançamento${filtered.length !== 1 ? 's' : ''}`}
+          <div className="flex items-center justify-between pt-1 border-t">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground font-medium">Exibição de valores:</span>
+              <button
+                onClick={() => setMostrarValores(true)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${mostrarValores ? 'bg-primary text-primary-foreground border-primary' : 'bg-background text-muted-foreground border-border hover:bg-muted/50'}`}
+              >
+                <Eye className="h-3.5 w-3.5" /> Mostrar valores
+              </button>
+              <button
+                onClick={() => setMostrarValores(false)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${!mostrarValores ? 'bg-primary text-primary-foreground border-primary' : 'bg-background text-muted-foreground border-border hover:bg-muted/50'}`}
+              >
+                <EyeOff className="h-3.5 w-3.5" /> Ocultar valores
+              </button>
+            </div>
+            <div className="text-sm text-muted-foreground">
+              {loading ? 'Carregando…' : `${filtered.length} lançamento${filtered.length !== 1 ? 's' : ''}`}
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -607,9 +621,11 @@ export default function Relatorios() {
                     {' · '}{setor.subtotalHoras.toFixed(1)}h
                   </p>
                 </div>
-                <span className="font-bold tabular-nums text-primary">
-                  {formatCurrency(isFaturamento ? setor.subtotalValorCliente : setor.subtotalValorCooperado)}
-                </span>
+                {mostrarValores && (
+                  <span className="font-bold tabular-nums text-primary">
+                    {formatCurrency(isFaturamento ? setor.subtotalValorCliente : setor.subtotalValorCooperado)}
+                  </span>
+                )}
               </div>
 
               {/* tabela de cooperados do setor */}
@@ -624,9 +640,7 @@ export default function Relatorios() {
                       <th className="text-center p-3 font-medium">Noturnos</th>
                       <th className="text-center p-3 font-medium">Total</th>
                       <th className="text-right p-3 font-medium">Horas</th>
-                      <th className="text-right p-3 font-medium">
-                        {isFaturamento ? 'Valor Faturado' : 'Valor a Receber'}
-                      </th>
+                      {mostrarValores && <th className="text-right p-3 font-medium">{isFaturamento ? 'Valor Faturado' : 'Valor a Receber'}</th>}
                     </tr>
                   </thead>
                   <tbody className="divide-y">
@@ -649,9 +663,11 @@ export default function Relatorios() {
                         <td className="p-3 text-right tabular-nums text-muted-foreground">
                           {c.totalHoras.toFixed(1)}h
                         </td>
-                        <td className="p-3 text-right tabular-nums font-bold text-primary">
-                          {formatCurrency(isFaturamento ? c.valorCliente : c.valorCooperado)}
-                        </td>
+                        {mostrarValores && (
+                          <td className="p-3 text-right tabular-nums font-bold text-primary">
+                            {formatCurrency(isFaturamento ? c.valorCliente : c.valorCooperado)}
+                          </td>
+                        )}
                       </tr>
                     ))}
                   </tbody>
@@ -664,9 +680,11 @@ export default function Relatorios() {
                       <td className="p-3 text-center tabular-nums">{setor.subtotalNoturnos}</td>
                       <td className="p-3 text-center tabular-nums">{setor.subtotalPlantoes}</td>
                       <td className="p-3 text-right tabular-nums">{setor.subtotalHoras.toFixed(1)}h</td>
-                      <td className="p-3 text-right tabular-nums text-primary">
-                        {formatCurrency(isFaturamento ? setor.subtotalValorCliente : setor.subtotalValorCooperado)}
-                      </td>
+                      {mostrarValores && (
+                        <td className="p-3 text-right tabular-nums text-primary">
+                          {formatCurrency(isFaturamento ? setor.subtotalValorCliente : setor.subtotalValorCooperado)}
+                        </td>
+                      )}
                     </tr>
                   </tfoot>
                 </table>
@@ -683,9 +701,11 @@ export default function Relatorios() {
               <span className="text-muted-foreground">{filtered.length} plantão{filtered.length !== 1 ? 'ões' : ''}</span>
               <span className="text-muted-foreground tabular-nums">{totalHoras.toFixed(1)}h produzidas</span>
             </div>
-            <span className="text-xl font-bold tabular-nums text-primary">
-              {formatCurrency(isFaturamento ? totalCliente : totalCooperado)}
-            </span>
+            {mostrarValores && (
+              <span className="text-xl font-bold tabular-nums text-primary">
+                {formatCurrency(isFaturamento ? totalCliente : totalCooperado)}
+              </span>
+            )}
           </div>
         </div>
       )}
