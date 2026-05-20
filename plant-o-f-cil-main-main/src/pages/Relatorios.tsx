@@ -157,6 +157,7 @@ function gerarPDFConsolidado(
   periodoLabel: string,
   filtros: Record<string, string>,
   isFaturamento: boolean,
+  mostrarValores: boolean,
 ) {
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
   const W = doc.internal.pageSize.getWidth();
@@ -165,17 +166,18 @@ function gerarPDFConsolidado(
   gerarPDFHeader(doc, titulo, periodoLabel, filtros);
 
   // KPIs
-  const totalDiurnos = rows.filter(r => r.tipo_plantao === 'normal').length;
+  const totalDiurnos  = rows.filter(r => r.tipo_plantao === 'normal').length;
   const totalNoturnos = rows.filter(r => r.tipo_plantao === 'extra').length;
   const totalDiaristas = rows.filter(r => r.tipo_plantao === 'diarista').length;
   const totalValor = isFaturamento
     ? rows.reduce((s, r) => s + Number(r.valor_cobrado_cliente), 0)
     : rows.reduce((s, r) => s + Number(r.valor_repasse_cooperado), 0);
+
   const kpis = [
-    { label: 'Diurnos', value: String(totalDiurnos) },
-    { label: 'Noturnos', value: String(totalNoturnos) },
+    { label: 'Diurnos',   value: String(totalDiurnos) },
+    { label: 'Noturnos',  value: String(totalNoturnos) },
     { label: 'Diaristas', value: String(totalDiaristas) },
-    { label: isFaturamento ? 'Total Faturado' : 'Total Repasse', value: fmtBRL(totalValor) },
+    ...(mostrarValores ? [{ label: isFaturamento ? 'Total Faturado' : 'Total Repasse', value: fmtBRL(totalValor) }] : []),
   ];
   const kpiW = (W - 28) / kpis.length;
   kpis.forEach((k, i) => {
@@ -188,17 +190,27 @@ function gerarPDFConsolidado(
     doc.text(k.value, x + 4, 44);
   });
 
-  // Larguras fixas das colunas (landscape A4 = ~269mm útil, 8 colunas)
-  const colStyles = {
-    0: { cellWidth: 60 },                                    // Cooperado
-    1: { cellWidth: 42 },                                    // Função
-    2: { cellWidth: 42 },                                    // Setor
-    3: { cellWidth: 20, halign: 'center' as const },         // Diurnos
-    4: { cellWidth: 20, halign: 'center' as const },         // Noturnos
-    5: { cellWidth: 18, halign: 'center' as const },         // Total
-    6: { cellWidth: 23, halign: 'right' as const },          // Horas
-    7: { cellWidth: 32, halign: 'right' as const },          // Valor
-  };
+  // Larguras dinâmicas conforme mostrarValores
+  const colStyles = mostrarValores
+    ? {
+        0: { cellWidth: 60 },
+        1: { cellWidth: 42 },
+        2: { cellWidth: 42 },
+        3: { cellWidth: 20, halign: 'center' as const },
+        4: { cellWidth: 20, halign: 'center' as const },
+        5: { cellWidth: 18, halign: 'center' as const },
+        6: { cellWidth: 23, halign: 'right'  as const },
+        7: { cellWidth: 32, halign: 'right'  as const },
+      }
+    : {
+        0: { cellWidth: 78 },
+        1: { cellWidth: 52 },
+        2: { cellWidth: 52 },
+        3: { cellWidth: 24, halign: 'center' as const },
+        4: { cellWidth: 24, halign: 'center' as const },
+        5: { cellWidth: 20, halign: 'center' as const },
+        6: { cellWidth: 30, halign: 'right'  as const },
+      };
 
   const setores = buildSetorCards(rows);
   let startY = 54;
@@ -207,20 +219,20 @@ function gerarPDFConsolidado(
     const subtotalValor = isFaturamento ? setor.subtotalValorCliente : setor.subtotalValorCooperado;
     if (startY > doc.internal.pageSize.getHeight() - 45) { doc.addPage(); startY = 14; }
 
-    // Cabeçalho do setor
     doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(31, 41, 99);
     doc.text(`Setor: ${setor.nome}`, 14, startY);
     doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(80, 80, 80);
-    doc.text(
-      `${setor.subtotalTotal} plantão(ões)  ·  ${setor.subtotalDiurnos} diurno(s)  ·  ${setor.subtotalNoturnos} noturno(s)  ·  ${setor.subtotalHoras.toFixed(1)}h  ·  Total: ${fmtBRL(subtotalValor)}`,
-      14, startY + 4,
-    );
+    const infoSetor = `${setor.subtotalTotal} plantão(ões)  ·  ${setor.subtotalDiurnos} diurno(s)  ·  ${setor.subtotalNoturnos} noturno(s)  ·  ${setor.subtotalHoras.toFixed(1)}h`
+      + (mostrarValores ? `  ·  Total: ${fmtBRL(subtotalValor)}` : '');
+    doc.text(infoSetor, 14, startY + 4);
     startY += 9;
 
-    autoTable(doc, {
-      startY,
-      head: [['Cooperado', 'Função', 'Setor', 'Diurnos', 'Noturnos', 'Total', 'Horas', valorLabel]],
-      body: setor.coops.map(c => [
+    const head = mostrarValores
+      ? [['Cooperado', 'Função', 'Setor', 'Diurnos', 'Noturnos', 'Total', 'Horas', valorLabel]]
+      : [['Cooperado', 'Função', 'Setor', 'Diurnos', 'Noturnos', 'Total', 'Horas']];
+
+    const body = setor.coops.map(c => {
+      const row: string[] = [
         c.nome,
         profissaoLabel[c.profissao] ?? c.profissao,
         setor.nome,
@@ -228,16 +240,30 @@ function gerarPDFConsolidado(
         String(c.noturnos),
         String(c.total),
         c.totalHoras.toFixed(1) + 'h',
-        fmtBRL(isFaturamento ? c.valorCliente : c.valorCooperado),
-      ]),
-      foot: [[
-        { content: `Subtotal — ${setor.nome}`, colSpan: 3, styles: { halign: 'right' as const } },
-        { content: String(setor.subtotalDiurnos), styles: { halign: 'center' as const } },
-        { content: String(setor.subtotalNoturnos), styles: { halign: 'center' as const } },
-        { content: String(setor.subtotalTotal), styles: { halign: 'center' as const } },
-        { content: setor.subtotalHoras.toFixed(1) + 'h', styles: { halign: 'right' as const } },
-        { content: fmtBRL(subtotalValor), styles: { halign: 'right' as const } },
-      ]],
+      ];
+      if (mostrarValores) row.push(fmtBRL(isFaturamento ? c.valorCliente : c.valorCooperado));
+      return row;
+    });
+
+    const foot = mostrarValores
+      ? [[
+          { content: `Subtotal — ${setor.nome}`, colSpan: 3, styles: { halign: 'right' as const } },
+          { content: String(setor.subtotalDiurnos),  styles: { halign: 'center' as const } },
+          { content: String(setor.subtotalNoturnos), styles: { halign: 'center' as const } },
+          { content: String(setor.subtotalTotal),    styles: { halign: 'center' as const } },
+          { content: setor.subtotalHoras.toFixed(1) + 'h', styles: { halign: 'right' as const } },
+          { content: fmtBRL(subtotalValor),          styles: { halign: 'right' as const } },
+        ]]
+      : [[
+          { content: `Subtotal — ${setor.nome}`, colSpan: 3, styles: { halign: 'right' as const } },
+          { content: String(setor.subtotalDiurnos),  styles: { halign: 'center' as const } },
+          { content: String(setor.subtotalNoturnos), styles: { halign: 'center' as const } },
+          { content: String(setor.subtotalTotal),    styles: { halign: 'center' as const } },
+          { content: setor.subtotalHoras.toFixed(1) + 'h', styles: { halign: 'right' as const } },
+        ]];
+
+    autoTable(doc, {
+      startY, head, body, foot,
       styles: { fontSize: 7.5, cellPadding: 2.5 },
       headStyles: { fillColor: [31, 41, 99], textColor: 255, fontStyle: 'bold' },
       footStyles: { fillColor: [240, 242, 255], textColor: [31, 41, 99], fontStyle: 'bold' },
@@ -250,16 +276,25 @@ function gerarPDFConsolidado(
 
   // Total geral
   if (startY > doc.internal.pageSize.getHeight() - 25) { doc.addPage(); startY = 14; }
+  const totalGeralRow = mostrarValores
+    ? [[
+        { content: 'TOTAL GERAL', colSpan: 3, styles: { fontStyle: 'bold', halign: 'left' as const } },
+        { content: String(totalDiurnos),  styles: { halign: 'center' as const, fontStyle: 'bold' } },
+        { content: String(totalNoturnos), styles: { halign: 'center' as const, fontStyle: 'bold' } },
+        { content: String(rows.length),   styles: { halign: 'center' as const, fontStyle: 'bold' } },
+        { content: rows.reduce((s, r) => s + Number(r.total_horas), 0).toFixed(1) + 'h', styles: { halign: 'right' as const, fontStyle: 'bold' } },
+        { content: fmtBRL(totalValor),    styles: { halign: 'right' as const, fontStyle: 'bold' } },
+      ]]
+    : [[
+        { content: 'TOTAL GERAL', colSpan: 3, styles: { fontStyle: 'bold', halign: 'left' as const } },
+        { content: String(totalDiurnos),  styles: { halign: 'center' as const, fontStyle: 'bold' } },
+        { content: String(totalNoturnos), styles: { halign: 'center' as const, fontStyle: 'bold' } },
+        { content: String(rows.length),   styles: { halign: 'center' as const, fontStyle: 'bold' } },
+        { content: rows.reduce((s, r) => s + Number(r.total_horas), 0).toFixed(1) + 'h', styles: { halign: 'right' as const, fontStyle: 'bold' } },
+      ]];
+
   autoTable(doc, {
-    startY,
-    body: [[
-      { content: 'TOTAL GERAL', colSpan: 3, styles: { fontStyle: 'bold', halign: 'left' as const } },
-      { content: String(totalDiurnos), styles: { halign: 'center' as const, fontStyle: 'bold' } },
-      { content: String(totalNoturnos), styles: { halign: 'center' as const, fontStyle: 'bold' } },
-      { content: String(rows.length), styles: { halign: 'center' as const, fontStyle: 'bold' } },
-      { content: rows.reduce((s, r) => s + Number(r.total_horas), 0).toFixed(1) + 'h', styles: { halign: 'right' as const, fontStyle: 'bold' } },
-      { content: fmtBRL(totalValor), styles: { halign: 'right' as const, fontStyle: 'bold' } },
-    ]],
+    startY, body: totalGeralRow,
     styles: { fontSize: 8.5, cellPadding: 3 },
     bodyStyles: { fillColor: [31, 41, 99], textColor: 255 },
     columnStyles: colStyles,
@@ -269,34 +304,44 @@ function gerarPDFConsolidado(
   // Resumo por setor
   startY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 12;
   if (startY > doc.internal.pageSize.getHeight() - 60) { doc.addPage(); startY = 14; }
-
   doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(31, 41, 99);
   doc.text('Resumo por Setor', 14, startY);
   startY += 4;
 
+  const resumoHead = mostrarValores
+    ? [['Setor', 'Plantões', 'Horas', valorLabel]]
+    : [['Setor', 'Plantões', 'Horas']];
+
+  const resumoBody = setores.map(s => {
+    const row: string[] = [s.nome, String(s.subtotalTotal), s.subtotalHoras.toFixed(1) + 'h'];
+    if (mostrarValores) row.push(fmtBRL(isFaturamento ? s.subtotalValorCliente : s.subtotalValorCooperado));
+    return row;
+  });
+
+  const resumoFoot = mostrarValores
+    ? [[
+        { content: 'Total', styles: { fontStyle: 'bold', halign: 'left' as const } },
+        { content: String(setores.reduce((s, x) => s + x.subtotalTotal, 0)), styles: { fontStyle: 'bold' } },
+        { content: setores.reduce((s, x) => s + x.subtotalHoras, 0).toFixed(1) + 'h', styles: { fontStyle: 'bold', halign: 'right' as const } },
+        { content: fmtBRL(totalValor), styles: { fontStyle: 'bold', halign: 'right' as const } },
+      ]]
+    : [[
+        { content: 'Total', styles: { fontStyle: 'bold', halign: 'left' as const } },
+        { content: String(setores.reduce((s, x) => s + x.subtotalTotal, 0)), styles: { fontStyle: 'bold' } },
+        { content: setores.reduce((s, x) => s + x.subtotalHoras, 0).toFixed(1) + 'h', styles: { fontStyle: 'bold', halign: 'right' as const } },
+      ]];
+
+  const resumoColStyles = mostrarValores
+    ? { 0: { cellWidth: 80 }, 1: { cellWidth: 30, halign: 'center' as const }, 2: { cellWidth: 30, halign: 'right' as const }, 3: { cellWidth: 50, halign: 'right' as const } }
+    : { 0: { cellWidth: 110 }, 1: { cellWidth: 50, halign: 'center' as const }, 2: { cellWidth: 50, halign: 'right' as const } };
+
   autoTable(doc, {
-    startY,
-    head: [['Setor', 'Plantões', 'Horas', valorLabel]],
-    body: setores.map(s => {
-      const val = isFaturamento ? s.subtotalValorCliente : s.subtotalValorCooperado;
-      return [s.nome, String(s.subtotalTotal), s.subtotalHoras.toFixed(1) + 'h', fmtBRL(val)];
-    }),
-    foot: [[
-      { content: 'Total', styles: { fontStyle: 'bold', halign: 'left' as const } },
-      { content: String(setores.reduce((s, x) => s + x.subtotalTotal, 0)), styles: { fontStyle: 'bold' } },
-      { content: setores.reduce((s, x) => s + x.subtotalHoras, 0).toFixed(1) + 'h', styles: { fontStyle: 'bold', halign: 'right' as const } },
-      { content: fmtBRL(totalValor), styles: { fontStyle: 'bold', halign: 'right' as const } },
-    ]],
+    startY, head: resumoHead, body: resumoBody, foot: resumoFoot,
     styles: { fontSize: 8, cellPadding: 2.5 },
     headStyles: { fillColor: [31, 41, 99], textColor: 255, fontStyle: 'bold' },
     footStyles: { fillColor: [31, 41, 99], textColor: 255, fontStyle: 'bold' },
     alternateRowStyles: { fillColor: [248, 249, 252] },
-    columnStyles: {
-      0: { cellWidth: 80 },
-      1: { cellWidth: 30, halign: 'center' as const },
-      2: { cellWidth: 30, halign: 'right' as const },
-      3: { cellWidth: 50, halign: 'right' as const },
-    },
+    columnStyles: resumoColStyles,
     margin: { left: 14, right: 14 },
   });
 
@@ -304,12 +349,12 @@ function gerarPDFConsolidado(
   doc.save(`${isFaturamento ? 'faturamento' : 'repasse'}_${periodoLabel.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`);
 }
 
-function gerarPDFFaturamento(rows: LancRow[], periodoLabel: string, filtros: Record<string, string>) {
-  gerarPDFConsolidado(rows, periodoLabel, filtros, true);
+function gerarPDFFaturamento(rows: LancRow[], periodoLabel: string, filtros: Record<string, string>, mostrarValores: boolean) {
+  gerarPDFConsolidado(rows, periodoLabel, filtros, true, mostrarValores);
 }
 
-function gerarPDFRepasse(rows: LancRow[], periodoLabel: string, filtros: Record<string, string>) {
-  gerarPDFConsolidado(rows, periodoLabel, filtros, false);
+function gerarPDFRepasse(rows: LancRow[], periodoLabel: string, filtros: Record<string, string>, mostrarValores: boolean) {
+  gerarPDFConsolidado(rows, periodoLabel, filtros, false, mostrarValores);
 }
 
 export default function Relatorios() {
@@ -469,8 +514,8 @@ export default function Relatorios() {
         <div className="flex gap-2">
           <Button variant="outline" className="gap-2"
             onClick={() => isFaturamento
-              ? gerarPDFFaturamento(filtered, periodoCalc.label, getFiltrosNomes())
-              : gerarPDFRepasse(filtered, periodoCalc.label, getFiltrosNomes())}
+              ? gerarPDFFaturamento(filtered, periodoCalc.label, getFiltrosNomes(), mostrarValores)
+              : gerarPDFRepasse(filtered, periodoCalc.label, getFiltrosNomes(), mostrarValores)}
             disabled={filtered.length === 0}>
             <FileText className="h-4 w-4" /> PDF
           </Button>
