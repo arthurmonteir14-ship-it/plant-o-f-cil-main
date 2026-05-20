@@ -175,16 +175,17 @@ function exportCSV(rows: LancRow[], aba: 'cobranca' | 'repasse', periodoLabel: s
 
 // ─── PDF RPA Individual ───────────────────────────────────────────────────────
 
-async function gerarPDFRPA(cooperado: Cooperado, lancamentos: LancRow[], periodoLabel: string, download = true): Promise<jsPDF> {
+async function gerarPDFRPA(cooperado: Cooperado, lancamentos: LancRow[], periodoLabel: string, download = true, descInss = false, descCotaParte = false): Promise<jsPDF> {
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
   const W = doc.internal.pageSize.getWidth();
   const H = doc.internal.pageSize.getHeight();
   const ML = 14; const MR = 14; const CW = W - ML - MR;
 
-  const valorBruto = lancamentos.reduce((s, r) => s + Number(r.valor_repasse_cooperado), 0);
-  const descontoINSS = valorBruto * PERCENTUAL_INSS;
-  const totalDescontos = descontoINSS + DESCONTO_COTA_PARTE;
-  const valorLiquido = valorBruto - totalDescontos;
+  const valorBruto     = lancamentos.reduce((s, r) => s + Number(r.valor_repasse_cooperado), 0);
+  const descontoINSS   = descInss      ? valorBruto * PERCENTUAL_INSS : 0;
+  const descontoCota   = descCotaParte ? DESCONTO_COTA_PARTE          : 0;
+  const totalDescontos = descontoINSS + descontoCota;
+  const valorLiquido   = valorBruto - totalDescontos;
   const totalHoras = lancamentos.reduce((s, r) => s + Number(r.total_horas), 0);
   const valorHoraMedio = totalHoras > 0 ? valorBruto / totalHoras : 0;
   const slug = (s: string) => s.replace(/[^a-zA-Z0-9]/g, '_');
@@ -306,13 +307,11 @@ async function gerarPDFRPA(cooperado: Cooperado, lancamentos: LancRow[], periodo
   const halfW = CW / 2; const lRowH = 10;
   const ledgerRows = [
     { label: 'Valor Bruto dos Serviços', value: fmt(valorBruto), col: 0, subtotal: true },
-    { label: 'Total de Descontos', value: `− ${fmt(totalDescontos)}`, col: 1, subtotal: true, negative: true },
-    { label: 'Honorários líquidos antes de cota', value: fmt(valorBruto), col: 0 },
-    { label: `INSS (${(PERCENTUAL_INSS * 100).toFixed(0)}%)`, value: `− ${fmt(descontoINSS)}`, col: 1, negative: true },
+    { label: 'Total de Descontos', value: totalDescontos > 0 ? `− ${fmt(totalDescontos)}` : '—', col: 1, subtotal: true, negative: totalDescontos > 0 },
     { label: 'Quantidade de plantões', value: String(lancamentos.length).padStart(2, '0'), col: 0 },
-    { label: 'Cota-parte cooperativa', value: `− ${fmt(DESCONTO_COTA_PARTE)}`, col: 1, negative: true },
+    { label: `INSS (${(PERCENTUAL_INSS * 100).toFixed(0)}%)`, value: descInss ? `− ${fmt(descontoINSS)}` : 'Não aplicado', col: 1, negative: descInss, zero: !descInss },
     { label: 'Valor-hora médio apurado', value: `${fmt(valorHoraMedio)} / h`, col: 0 },
-    { label: 'IRRF', value: fmt(0), col: 1, zero: true },
+    { label: 'Cota-parte cooperativa', value: descCotaParte ? `− ${fmt(descontoCota)}` : 'Não aplicada', col: 1, negative: descCotaParte, zero: !descCotaParte },
   ];
   ledgerRows.forEach((lr, i) => {
     const row = Math.floor(i / 2); const x = ML + lr.col * halfW; const ly = y + row * lRowH;
@@ -381,10 +380,10 @@ async function gerarPDFRPA(cooperado: Cooperado, lancamentos: LancRow[], periodo
 
 // ─── Envio de e-mail via Edge Function ────────────────────────────────────────
 
-async function enviarRPAEmail(cooperado: Cooperado, lancamentos: LancRow[], periodoLabel: string): Promise<{ success: boolean; error?: string }> {
+async function enviarRPAEmail(cooperado: Cooperado, lancamentos: LancRow[], periodoLabel: string, descInss = false, descCotaParte = false): Promise<{ success: boolean; error?: string }> {
   if (!cooperado.email) return { success: false, error: 'E-mail não cadastrado para este cooperado.' };
   try {
-    const doc = await gerarPDFRPA(cooperado, lancamentos, periodoLabel, false);
+    const doc = await gerarPDFRPA(cooperado, lancamentos, periodoLabel, false, descInss, descCotaParte);
     const slug = (s: string) => s.replace(/[^a-zA-Z0-9]/g, '_');
     const pdfName = `RPA_${slug(cooperado.nome)}_${slug(periodoLabel)}.pdf`;
     const pdfBase64 = doc.output('datauristring').split(',')[1];
@@ -400,13 +399,15 @@ async function enviarRPAEmail(cooperado: Cooperado, lancamentos: LancRow[], peri
 
 // ─── Modal de Visualização da RPA ─────────────────────────────────────────────
 
-function ModalVisualizarRPA({ open, onClose, cooperado, lancamentos, periodoLabel }: {
+function ModalVisualizarRPA({ open, onClose, cooperado, lancamentos, periodoLabel, descInss, descCotaParte }: {
   open: boolean; onClose: () => void;
   cooperado: Cooperado; lancamentos: LancRow[]; periodoLabel: string;
+  descInss: boolean; descCotaParte: boolean;
 }) {
-  const valorBruto = lancamentos.reduce((s, r) => s + Number(r.valor_repasse_cooperado), 0);
-  const descontoINSS = valorBruto * PERCENTUAL_INSS;
-  const totalDescontos = descontoINSS + DESCONTO_COTA_PARTE;
+  const valorBruto   = lancamentos.reduce((s, r) => s + Number(r.valor_repasse_cooperado), 0);
+  const descontoINSS = descInss      ? valorBruto * PERCENTUAL_INSS : 0;
+  const descontoCota = descCotaParte ? DESCONTO_COTA_PARTE          : 0;
+  const totalDescontos = descontoINSS + descontoCota;
   const valorLiquido = valorBruto - totalDescontos;
   const totalHoras = lancamentos.reduce((s, r) => s + Number(r.total_horas), 0);
   const valorHoraMedio = totalHoras > 0 ? valorBruto / totalHoras : 0;
@@ -527,13 +528,11 @@ function ModalVisualizarRPA({ open, onClose, cooperado, lancamentos, periodoLabe
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', borderTop: `1px solid ${lineColor}`, borderLeft: `1px solid ${lineColor}` }}>
                 {[
                   { label: 'Valor Bruto dos Serviços', value: fmt(valorBruto), subtotal: true },
-                  { label: 'Total de Descontos', value: `− ${fmt(totalDescontos)}`, subtotal: true, negative: true },
-                  { label: 'Honorários líquidos antes de cota', value: fmt(valorBruto), subtotal: false },
-                  { label: `INSS (${(PERCENTUAL_INSS * 100).toFixed(0)}%)`, value: `− ${fmt(descontoINSS)}`, subtotal: false, negative: true },
+                  { label: 'Total de Descontos', value: totalDescontos > 0 ? `− ${fmt(totalDescontos)}` : '—', subtotal: true, negative: totalDescontos > 0 },
                   { label: 'Quantidade de plantões', value: String(lancamentos.length).padStart(2, '0'), subtotal: false },
-                  { label: 'Cota-parte cooperativa', value: `− ${fmt(DESCONTO_COTA_PARTE)}`, subtotal: false, negative: true },
+                  { label: `INSS (${(PERCENTUAL_INSS * 100).toFixed(0)}%)`, value: descInss ? `− ${fmt(descontoINSS)}` : 'Não aplicado', subtotal: false, negative: descInss, zero: !descInss },
                   { label: 'Valor-hora médio apurado', value: `${fmt(valorHoraMedio)} / h`, subtotal: false },
-                  { label: 'IRRF', value: fmt(0), subtotal: false, zero: true },
+                  { label: 'Cota-parte cooperativa', value: descCotaParte ? `− ${fmt(descontoCota)}` : 'Não aplicada', subtotal: false, negative: descCotaParte, zero: !descCotaParte },
                 ].map((lr, i) => (
                   <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr auto', alignItems: 'baseline', padding: '10px 14px', borderRight: `1px solid ${lineColor}`, borderBottom: `1px solid ${lineColor}`, gap: 16, background: lr.subtotal ? '#fafafa' : undefined, borderTop: lr.subtotal ? `1px solid #1a1a1a` : undefined }}>
                     <span style={{ fontSize: 11, color: inkLight, fontWeight: lr.subtotal ? 600 : 400, textTransform: lr.subtotal ? 'uppercase' : undefined, letterSpacing: lr.subtotal ? '0.08em' : undefined }}>{lr.label}</span>
@@ -594,7 +593,7 @@ function ModalVisualizarRPA({ open, onClose, cooperado, lancamentos, periodoLabe
 
         <div className="flex justify-end gap-2 px-5 pb-5">
           <Button variant="outline" onClick={onClose}>Fechar</Button>
-          <Button onClick={() => { void gerarPDFRPA(cooperado, lancamentos, periodoLabel, true); }}>
+          <Button onClick={() => { void gerarPDFRPA(cooperado, lancamentos, periodoLabel, true, descInss, descCotaParte); }}>
             <Download className="h-4 w-4 mr-2" /> Baixar PDF
           </Button>
         </div>
@@ -605,20 +604,22 @@ function ModalVisualizarRPA({ open, onClose, cooperado, lancamentos, periodoLabe
 
 // ─── Card de Cooperado para RPA ───────────────────────────────────────────────
 
-function CardCooperadoRPA({ cooperado, lancamentos, periodoLabel, status, onStatusChange }: {
+function CardCooperadoRPA({ cooperado, lancamentos, periodoLabel, status, onStatusChange, descInss, descCotaParte }: {
   cooperado: Cooperado; lancamentos: LancRow[]; periodoLabel: string;
   status: StatusRPA; onStatusChange: (s: StatusRPA) => void;
+  descInss: boolean; descCotaParte: boolean;
 }) {
   const [showModal, setShowModal] = useState(false);
   const [sending, setSending] = useState(false);
 
-  const valorBruto = lancamentos.reduce((s, r) => s + Number(r.valor_repasse_cooperado), 0);
-  const descontoINSS = valorBruto * PERCENTUAL_INSS;
-  const valorLiquido = valorBruto - descontoINSS - DESCONTO_COTA_PARTE;
+  const valorBruto   = lancamentos.reduce((s, r) => s + Number(r.valor_repasse_cooperado), 0);
+  const descontoINSS = descInss      ? valorBruto * PERCENTUAL_INSS : 0;
+  const descontoCota = descCotaParte ? DESCONTO_COTA_PARTE          : 0;
+  const valorLiquido = valorBruto - descontoINSS - descontoCota;
 
   const handleEnviar = async () => {
     setSending(true);
-    const result = await enviarRPAEmail(cooperado, lancamentos, periodoLabel);
+    const result = await enviarRPAEmail(cooperado, lancamentos, periodoLabel, descInss, descCotaParte);
     setSending(false);
     if (result.success) { onStatusChange('enviado'); toast.success(`RPA enviada para ${cooperado.email}`); }
     else { onStatusChange('erro'); toast.error(result.error ?? 'Erro ao enviar RPA'); }
@@ -647,10 +648,10 @@ function CardCooperadoRPA({ cooperado, lancamentos, periodoLabel, status, onStat
           </div>
           <div className="bg-muted/40 rounded-md p-3 mb-3 space-y-1.5">
             <div className="flex justify-between text-xs"><span className="text-muted-foreground">Valor Bruto</span><span className="tabular-nums">{fmt(valorBruto)}</span></div>
-            <div className="flex justify-between text-xs text-red-600"><span>(-) INSS 20%</span><span className="tabular-nums">({fmt(descontoINSS)})</span></div>
-            <div className="flex justify-between text-xs text-red-600"><span>(-) Cota Parte</span><span className="tabular-nums">({fmt(DESCONTO_COTA_PARTE)})</span></div>
+            {descInss && <div className="flex justify-between text-xs text-red-600"><span>(-) INSS 20%</span><span className="tabular-nums">({fmt(descontoINSS)})</span></div>}
+            {descCotaParte && <div className="flex justify-between text-xs text-red-600"><span>(-) Cota Parte</span><span className="tabular-nums">({fmt(descontoCota)})</span></div>}
             <div className="border-t border-border/60 pt-1.5 flex justify-between">
-              <span className="text-sm font-bold text-primary">Valor Líquido</span>
+              <span className="text-sm font-bold text-primary">{(descInss || descCotaParte) ? 'Valor Líquido' : 'Valor a Receber'}</span>
               <span className="text-sm font-bold text-primary tabular-nums">{fmt(valorLiquido)}</span>
             </div>
           </div>
@@ -662,7 +663,7 @@ function CardCooperadoRPA({ cooperado, lancamentos, periodoLabel, status, onStat
             <Button variant="outline" size="sm" className="gap-1 text-xs px-2" onClick={() => setShowModal(true)}>
               <Eye className="h-3.5 w-3.5" /><span className="hidden sm:inline">Visualizar</span><span className="sm:hidden">Ver</span>
             </Button>
-            <Button variant="outline" size="sm" className="gap-1 text-xs px-2" onClick={() => { void gerarPDFRPA(cooperado, lancamentos, periodoLabel, true); }}>
+            <Button variant="outline" size="sm" className="gap-1 text-xs px-2" onClick={() => { void gerarPDFRPA(cooperado, lancamentos, periodoLabel, true, descInss, descCotaParte); }}>
               <FileText className="h-3.5 w-3.5" /><span>PDF</span>
             </Button>
             <Button size="sm" className={`gap-1 text-xs px-2 ${status === 'enviado' ? 'bg-green-600 hover:bg-green-700' : ''}`}
@@ -674,7 +675,7 @@ function CardCooperadoRPA({ cooperado, lancamentos, periodoLabel, status, onStat
           </div>
         </CardContent>
       </Card>
-      {showModal && <ModalVisualizarRPA open={showModal} onClose={() => setShowModal(false)} cooperado={cooperado} lancamentos={lancamentos} periodoLabel={periodoLabel} />}
+      {showModal && <ModalVisualizarRPA open={showModal} onClose={() => setShowModal(false)} cooperado={cooperado} lancamentos={lancamentos} periodoLabel={periodoLabel} descInss={descInss} descCotaParte={descCotaParte} />}
     </>
   );
 }
@@ -686,8 +687,8 @@ function AbaRPA({ rows, hospitals, sectors, cooperados, periodoLabel }: { rows: 
   const [filterHospital, setFilterHospital] = useState('all');
   const [filterSetor, setFilterSetor] = useState('all');
   const [filterCooperado, setFilterCooperado] = useState('all');
-  const [descInss, setDescInss] = useState(true);
-  const [descCotaParte, setDescCotaParte] = useState(true);
+  const [descInss, setDescInss] = useState(false);
+  const [descCotaParte, setDescCotaParte] = useState(false);
 
   const setoresFiltrados = useMemo(
     () => filterHospital === 'all' ? sectors : sectors.filter(s => s.hospital_id === filterHospital),
@@ -714,7 +715,7 @@ function AbaRPA({ rows, hospitals, sectors, cooperados, periodoLabel }: { rows: 
       prog.nomAtual = cooperado.nome;
       setProgresso({ ...prog });
 
-      const result = await enviarRPAEmail(cooperado, lancamentos, periodoLabel);
+      const result = await enviarRPAEmail(cooperado, lancamentos, periodoLabel, descInss, descCotaParte);
       if (result.success) {
         prog.enviados++;
         setRpaStatus(prev => ({ ...prev, [cooperado.id]: 'enviado' }));
@@ -956,6 +957,19 @@ function AbaRPA({ rows, hospitals, sectors, cooperados, periodoLabel }: { rows: 
     <div className="space-y-5">
       <Card>
         <CardContent className="p-4 flex flex-wrap gap-3 items-end">
+          <div className="flex flex-col gap-1">
+            <Label className="text-xs font-medium">Descontos no RPA</Label>
+            <div className="flex flex-col gap-1.5 pt-0.5">
+              <label className="flex items-center gap-2 text-xs cursor-pointer select-none">
+                <input type="checkbox" checked={descInss} onChange={e => setDescInss(e.target.checked)} className="accent-[#1a2f5a] h-3.5 w-3.5" />
+                INSS (20%)
+              </label>
+              <label className="flex items-center gap-2 text-xs cursor-pointer select-none">
+                <input type="checkbox" checked={descCotaParte} onChange={e => setDescCotaParte(e.target.checked)} className="accent-[#1a2f5a] h-3.5 w-3.5" />
+                Cota Parte (R${DESCONTO_COTA_PARTE})
+              </label>
+            </div>
+          </div>
           <div className="min-w-[200px]">
             <Label className="text-xs">Cliente</Label>
             <Select value={filterHospital} onValueChange={v => { setFilterHospital(v); setFilterSetor('all'); setFilterCooperado('all'); }}>
@@ -992,17 +1006,6 @@ function AbaRPA({ rows, hospitals, sectors, cooperados, periodoLabel }: { rows: 
             {statusCounts.erro > 0 && <Badge variant="destructive" className="gap-1.5"><AlertCircle className="h-3 w-3" /> Erro: {statusCounts.erro}</Badge>}
           </div>
           <div className="ml-auto pb-0.5 flex flex-wrap items-end gap-2">
-            <div className="flex flex-col gap-1 text-xs text-muted-foreground">
-              <span className="font-medium text-foreground">Descontos no demonstrativo:</span>
-              <label className="flex items-center gap-1.5 cursor-pointer select-none">
-                <input type="checkbox" checked={descInss} onChange={e => setDescInss(e.target.checked)} className="accent-[#1a2f5a] h-3.5 w-3.5" />
-                INSS (20%)
-              </label>
-              <label className="flex items-center gap-1.5 cursor-pointer select-none">
-                <input type="checkbox" checked={descCotaParte} onChange={e => setDescCotaParte(e.target.checked)} className="accent-[#1a2f5a] h-3.5 w-3.5" />
-                Cota Parte (R${DESCONTO_COTA_PARTE})
-              </label>
-            </div>
             <Button
               size="sm"
               variant="outline"
@@ -1089,7 +1092,8 @@ function AbaRPA({ rows, hospitals, sectors, cooperados, periodoLabel }: { rows: 
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {filtered.map(({ cooperado, lancamentos }) => (
             <CardCooperadoRPA key={cooperado.id} cooperado={cooperado} lancamentos={lancamentos} periodoLabel={periodoLabel}
-              status={rpaStatus[cooperado.id] ?? 'pendente'} onStatusChange={s => setRpaStatus(prev => ({ ...prev, [cooperado.id]: s }))} />
+              status={rpaStatus[cooperado.id] ?? 'pendente'} onStatusChange={s => setRpaStatus(prev => ({ ...prev, [cooperado.id]: s }))}
+              descInss={descInss} descCotaParte={descCotaParte} />
           ))}
         </div>
       )}
