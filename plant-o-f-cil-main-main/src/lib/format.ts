@@ -18,6 +18,7 @@ export const profissaoLabel: Record<string, string> = {
   auxiliar_administrativo: 'Auxiliar Administrativo',
   tecnico_radiologia: 'Técnico de Radiologia',
   tecnico_hemodialise: 'Técnico de Hemodiálise',
+  cac: 'CAC',
 };
 
 export const tipoPlantaoLabel: Record<string, string> = {

@@ -323,12 +323,15 @@ export type Database = {
       profissao_enum:
         | "enfermeiro"
         | "enfermeiro_rt"
+        | "enfermeiro_nac"
         | "tecnico_enfermagem"
         | "fonoaudiologo"
         | "assistente_social"
         | "fisioterapeuta"
         | "auxiliar_administrativo"
         | "tecnico_radiologia"
+        | "tecnico_hemodialise"
+        | "cac"
       status_lancamento_enum: "lancado" | "aprovado" | "faturado" | "pago"
       tipo_plantao_enum: "normal" | "extra" | "sobreaviso" | "diarista"
     }
