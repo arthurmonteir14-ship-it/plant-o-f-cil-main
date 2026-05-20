@@ -858,6 +858,7 @@ function AbaRPA({ rows, hospitals, sectors, cooperados, periodoLabel }: { rows: 
       alternateRowStyles: { fillColor: [248, 250, 255] },
       margin: { left: ML, right: MR },
       rowPageBreak: 'avoid',
+      showFoot: 'lastPage',
     });
 
     // ── Resumo financeiro ──
