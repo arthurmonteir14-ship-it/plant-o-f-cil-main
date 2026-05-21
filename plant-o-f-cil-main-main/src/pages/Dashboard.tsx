@@ -200,10 +200,9 @@ export default function Dashboard() {
 
   // ── KPI cards (existentes) ─────────────────────────────────────────────────
   const cards = [
-    { label: 'Plantões no mês',       value: kpi.totalPlantoes,          icon: ListChecks, color: 'text-primary', bg: 'bg-primary-soft' },
+    { label: 'Plantões no mês',       value: kpi.totalPlantoes,              icon: ListChecks, color: 'text-primary', bg: 'bg-primary-soft' },
     { label: 'Faturamento previsto',   value: formatCurrency(kpi.faturamento), icon: Wallet,     color: 'text-accent',   bg: 'bg-accent-soft' },
     { label: 'Repasse aos cooperados', value: formatCurrency(kpi.repasse),    icon: HandCoins,  color: 'text-success',  bg: 'bg-success/10' },
-    { label: 'Lançamentos pendentes',  value: kpi.pendentes,              icon: Clock,      color: 'text-warning',  bg: 'bg-warning/10' },
   ];
 
   const tooltipStyle = { backgroundColor: '#fff', border: '1px solid #e5e7eb', borderRadius: 6, fontSize: 12 };
