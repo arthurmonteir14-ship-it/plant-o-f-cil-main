@@ -41,6 +41,21 @@ const maskCPF = (v: string) =>
 const maskCEP = (v: string) =>
   v.replace(/\D/g, '').slice(0, 8).replace(/(\d{5})(\d)/, '$1-$2');
 
+const maskPIS = (v: string) =>
+  v.replace(/\D/g, '').slice(0, 11)
+    .replace(/(\d{3})(\d)/, '$1.$2')
+    .replace(/(\d{3}\.\d{5})(\d)/, '$1.$2')
+    .replace(/(\d{3}\.\d{5}\.\d{2})(\d{1,2})$/, '$1-$2');
+
+const validarPIS = (pis: string): boolean => {
+  const n = pis.replace(/\D/g, '');
+  if (n.length !== 11 || /^(\d)\1{10}$/.test(n)) return false;
+  const pesos = [3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
+  const soma = n.slice(0, 10).split('').reduce((s, d, i) => s + parseInt(d) * pesos[i], 0);
+  const resto = soma % 11;
+  return (resto < 2 ? 0 : 11 - resto) === parseInt(n[10]);
+};
+
 const validarCPF = (cpf: string): boolean => {
   const n = cpf.replace(/\D/g, '');
   if (n.length !== 11 || /^(\d)\1{10}$/.test(n)) return false;
@@ -142,6 +157,7 @@ export default function CadastroCooperado() {
   const salvar = async () => {
     if (!form.nome.trim()) return toast.error('Informe o nome do cooperado');
     if (form.cpf && !validarCPF(form.cpf)) return toast.error('CPF inválido');
+    if (form.pis_inss && !validarPIS(form.pis_inss)) return toast.error('PIS/INSS inválido');
     setSaving(true);
     const payload = {
       nome: toTitleCase(form.nome),
@@ -317,7 +333,15 @@ export default function CadastroCooperado() {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <Label>CPF</Label>
-                  <Input value={form.cpf} onChange={e => f('cpf', maskCPF(e.target.value))} placeholder="000.000.000-00" />
+                  <Input
+                    value={form.cpf}
+                    onChange={e => f('cpf', maskCPF(e.target.value))}
+                    placeholder="000.000.000-00"
+                    className={form.cpf && form.cpf.replace(/\D/g,'').length === 11 && !validarCPF(form.cpf) ? 'border-red-500 focus-visible:ring-red-500' : ''}
+                  />
+                  {form.cpf && form.cpf.replace(/\D/g,'').length === 11 && !validarCPF(form.cpf) && (
+                    <p className="text-xs text-red-500 mt-1">CPF inválido</p>
+                  )}
                 </div>
                 <div>
                   <Label>RG</Label>
@@ -327,7 +351,15 @@ export default function CadastroCooperado() {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <Label>PIS / INSS</Label>
-                  <Input value={form.pis_inss} onChange={e => f('pis_inss', e.target.value)} placeholder="000.00000.00-0" />
+                  <Input
+                    value={form.pis_inss}
+                    onChange={e => f('pis_inss', maskPIS(e.target.value))}
+                    placeholder="000.00000.00-0"
+                    className={form.pis_inss && form.pis_inss.replace(/\D/g,'').length === 11 && !validarPIS(form.pis_inss) ? 'border-red-500 focus-visible:ring-red-500' : ''}
+                  />
+                  {form.pis_inss && form.pis_inss.replace(/\D/g,'').length === 11 && !validarPIS(form.pis_inss) && (
+                    <p className="text-xs text-red-500 mt-1">PIS/INSS inválido</p>
+                  )}
                 </div>
                 <div>
                   <Label>Data de nascimento</Label>
