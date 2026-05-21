@@ -12,13 +12,13 @@ import { calcPeriodo, periodoInicial, PeriodoState } from '@/lib/periodo';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
-interface LancRow {
-  id: string; data_plantao: string; total_horas: number;
-  profissao: string; tipo_plantao: string; status: string;
+interface AggRow {
+  setor_id: string; setor_nome: string;
+  cooperado_id: string; cooperado_nome: string; profissao: string;
+  hospital_id: string; hospital_nome: string;
+  tipo_plantao: string;
+  qtd: number; total_horas: number;
   valor_cobrado_cliente: number; valor_repasse_cooperado: number;
-  cooperados: { id: string; nome: string } | null;
-  hospitals: { id: string; nome: string } | null;
-  sectors: { id: string; nome: string } | null;
 }
 interface Hospital { id: string; nome: string; }
 interface Sector { id: string; nome: string; hospital_id: string; }
@@ -37,12 +37,12 @@ const PROF_COLORS: Record<string, string> = {
 const fmtBRL = (v: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v);
 const fmtData = (s: string) => s.split('-').reverse().join('/');
 
-function downloadCSVFaturamento(rows: LancRow[]) {
-  const header = ['Data', 'Cooperado', 'Profissão', 'Tipo', 'Cliente', 'Setor', 'Horas', 'Valor Cliente'];
+function downloadCSVFaturamento(rows: AggRow[]) {
+  const header = ['Cooperado', 'Profissão', 'Tipo', 'Cliente', 'Setor', 'Qtd', 'Horas', 'Valor Cliente'];
   const lines = rows.map(r => [
-    r.data_plantao, r.cooperados?.nome ?? '', profissaoLabel[r.profissao] ?? r.profissao,
-    tipoPlantaoLabel[r.tipo_plantao] ?? r.tipo_plantao, r.hospitals?.nome ?? '', r.sectors?.nome ?? '',
-    Number(r.total_horas).toFixed(2), Number(r.valor_cobrado_cliente).toFixed(2),
+    r.cooperado_nome, profissaoLabel[r.profissao] ?? r.profissao,
+    tipoPlantaoLabel[r.tipo_plantao] ?? r.tipo_plantao, r.hospital_nome, r.setor_nome,
+    String(r.qtd), Number(r.total_horas).toFixed(2), Number(r.valor_cobrado_cliente).toFixed(2),
   ].map(v => `"${v}"`).join(';'));
   const csv = [header.join(';'), ...lines].join('\n');
   const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
@@ -51,12 +51,12 @@ function downloadCSVFaturamento(rows: LancRow[]) {
   URL.revokeObjectURL(url);
 }
 
-function downloadCSVRepasse(rows: LancRow[]) {
-  const header = ['Data', 'Cooperado', 'Profissão', 'Tipo', 'Cliente', 'Setor', 'Horas', 'Repasse'];
+function downloadCSVRepasse(rows: AggRow[]) {
+  const header = ['Cooperado', 'Profissão', 'Tipo', 'Cliente', 'Setor', 'Qtd', 'Horas', 'Repasse'];
   const lines = rows.map(r => [
-    r.data_plantao, r.cooperados?.nome ?? '', profissaoLabel[r.profissao] ?? r.profissao,
-    tipoPlantaoLabel[r.tipo_plantao] ?? r.tipo_plantao, r.hospitals?.nome ?? '', r.sectors?.nome ?? '',
-    Number(r.total_horas).toFixed(2), Number(r.valor_repasse_cooperado).toFixed(2),
+    r.cooperado_nome, profissaoLabel[r.profissao] ?? r.profissao,
+    tipoPlantaoLabel[r.tipo_plantao] ?? r.tipo_plantao, r.hospital_nome, r.setor_nome,
+    String(r.qtd), Number(r.total_horas).toFixed(2), Number(r.valor_repasse_cooperado).toFixed(2),
   ].map(v => `"${v}"`).join(';'));
   const csv = [header.join(';'), ...lines].join('\n');
   const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
@@ -109,36 +109,31 @@ function gerarPDFFooter(doc: jsPDF) {
 }
 
 // Agrupa os lançamentos por setor → cooperado, consolidando diurnos/noturnos/diaristas
-function buildSetorCards(rows: LancRow[]) {
+function buildSetorCards(rows: AggRow[]) {
   const map = new Map<string, {
     nome: string;
-    coops: Map<string, { nome: string; profissao: string; diurno: LancRow[]; noturno: LancRow[]; diarista: LancRow[] }>;
+    coops: Map<string, { nome: string; profissao: string; diurno: number; noturno: number; diarista: number; horas: number; valorCliente: number; valorCooperado: number }>;
   }>();
   rows.forEach(r => {
-    const sId = r.sectors?.id ?? '_sem_';
-    const sNome = r.sectors?.nome ?? 'Sem setor';
-    if (!map.has(sId)) map.set(sId, { nome: sNome, coops: new Map() });
-    const s = map.get(sId)!;
-    const cId = r.cooperados?.id ?? '_sem_coop_';
-    if (!s.coops.has(cId)) s.coops.set(cId, { nome: r.cooperados?.nome ?? 'Sem cooperado', profissao: r.profissao, diurno: [], noturno: [], diarista: [] });
-    const c = s.coops.get(cId)!;
-    if (r.tipo_plantao === 'normal') c.diurno.push(r);
-    else if (r.tipo_plantao === 'diarista') c.diarista.push(r);
-    else c.noturno.push(r);
+    if (!map.has(r.setor_id)) map.set(r.setor_id, { nome: r.setor_nome, coops: new Map() });
+    const s = map.get(r.setor_id)!;
+    if (!s.coops.has(r.cooperado_id)) s.coops.set(r.cooperado_id, { nome: r.cooperado_nome, profissao: r.profissao, diurno: 0, noturno: 0, diarista: 0, horas: 0, valorCliente: 0, valorCooperado: 0 });
+    const c = s.coops.get(r.cooperado_id)!;
+    if (r.tipo_plantao === 'normal') c.diurno += Number(r.qtd);
+    else if (r.tipo_plantao === 'diarista') c.diarista += Number(r.qtd);
+    else c.noturno += Number(r.qtd);
+    c.horas += Number(r.total_horas);
+    c.valorCliente += Number(r.valor_cobrado_cliente);
+    c.valorCooperado += Number(r.valor_repasse_cooperado);
   });
   return [...map.entries()]
     .sort(([, a], [, b]) => a.nome.localeCompare(b.nome))
     .map(([, s]) => {
-      const coops = [...s.coops.values()].sort((a, b) => a.nome.localeCompare(b.nome)).map(c => {
-        const all = [...c.diurno, ...c.noturno, ...c.diarista];
-        return {
-          nome: c.nome, profissao: c.profissao,
-          diurnos: c.diurno.length, noturnos: c.noturno.length, diaristas: c.diarista.length, total: all.length,
-          totalHoras: all.reduce((sum, r) => sum + Number(r.total_horas), 0),
-          valorCliente: all.reduce((sum, r) => sum + Number(r.valor_cobrado_cliente), 0),
-          valorCooperado: all.reduce((sum, r) => sum + Number(r.valor_repasse_cooperado), 0),
-        };
-      });
+      const coops = [...s.coops.values()].sort((a, b) => a.nome.localeCompare(b.nome)).map(c => ({
+        nome: c.nome, profissao: c.profissao,
+        diurnos: c.diurno, noturnos: c.noturno, diaristas: c.diarista, total: c.diurno + c.noturno + c.diarista,
+        totalHoras: c.horas, valorCliente: c.valorCliente, valorCooperado: c.valorCooperado,
+      }));
       return {
         nome: s.nome, coops,
         subtotalDiurnos: coops.reduce((sum, c) => sum + c.diurnos, 0),
@@ -153,7 +148,7 @@ function buildSetorCards(rows: LancRow[]) {
 }
 
 function gerarPDFConsolidado(
-  rows: LancRow[],
+  rows: AggRow[],
   periodoLabel: string,
   filtros: Record<string, string>,
   isFaturamento: boolean,
@@ -166,9 +161,9 @@ function gerarPDFConsolidado(
   gerarPDFHeader(doc, titulo, periodoLabel, filtros);
 
   // KPIs
-  const totalDiurnos  = rows.filter(r => r.tipo_plantao === 'normal').length;
-  const totalNoturnos = rows.filter(r => r.tipo_plantao === 'extra').length;
-  const totalDiaristas = rows.filter(r => r.tipo_plantao === 'diarista').length;
+  const totalDiurnos   = rows.filter(r => r.tipo_plantao === 'normal').reduce((s, r) => s + Number(r.qtd), 0);
+  const totalNoturnos  = rows.filter(r => r.tipo_plantao === 'extra').reduce((s, r) => s + Number(r.qtd), 0);
+  const totalDiaristas = rows.filter(r => r.tipo_plantao === 'diarista').reduce((s, r) => s + Number(r.qtd), 0);
   const totalValor = isFaturamento
     ? rows.reduce((s, r) => s + Number(r.valor_cobrado_cliente), 0)
     : rows.reduce((s, r) => s + Number(r.valor_repasse_cooperado), 0);
@@ -281,7 +276,7 @@ function gerarPDFConsolidado(
         { content: 'TOTAL GERAL', colSpan: 3, styles: { fontStyle: 'bold', halign: 'left' as const } },
         { content: String(totalDiurnos),  styles: { halign: 'center' as const, fontStyle: 'bold' } },
         { content: String(totalNoturnos), styles: { halign: 'center' as const, fontStyle: 'bold' } },
-        { content: String(rows.length),   styles: { halign: 'center' as const, fontStyle: 'bold' } },
+        { content: String(totalDiurnos + totalNoturnos + totalDiaristas), styles: { halign: 'center' as const, fontStyle: 'bold' } },
         { content: rows.reduce((s, r) => s + Number(r.total_horas), 0).toFixed(1) + 'h', styles: { halign: 'right' as const, fontStyle: 'bold' } },
         { content: fmtBRL(totalValor),    styles: { halign: 'right' as const, fontStyle: 'bold' } },
       ]]
@@ -289,7 +284,7 @@ function gerarPDFConsolidado(
         { content: 'TOTAL GERAL', colSpan: 3, styles: { fontStyle: 'bold', halign: 'left' as const } },
         { content: String(totalDiurnos),  styles: { halign: 'center' as const, fontStyle: 'bold' } },
         { content: String(totalNoturnos), styles: { halign: 'center' as const, fontStyle: 'bold' } },
-        { content: String(rows.length),   styles: { halign: 'center' as const, fontStyle: 'bold' } },
+        { content: String(totalDiurnos + totalNoturnos + totalDiaristas), styles: { halign: 'center' as const, fontStyle: 'bold' } },
         { content: rows.reduce((s, r) => s + Number(r.total_horas), 0).toFixed(1) + 'h', styles: { halign: 'right' as const, fontStyle: 'bold' } },
       ]];
 
@@ -358,7 +353,7 @@ function gerarPDFRepasse(rows: LancRow[], periodoLabel: string, filtros: Record<
 }
 
 export default function Relatorios() {
-  const [rows, setRows] = useState<LancRow[]>([]);
+  const [rows, setRows] = useState<AggRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [periodo, setPeriodo] = useState<PeriodoState>(periodoInicial());
   const [tipoRelatorio, setTipoRelatorio] = useState<TipoRelatorio>('repasse');
@@ -380,25 +375,11 @@ export default function Relatorios() {
   const fetchRows = useCallback(async () => {
     const myId = ++fetchIdRef.current;
     setLoading(true);
-    const PAGE = 1000;
-    let all: LancRow[] = [];
-    let from = 0;
-    while (true) {
-      const { data, error } = await supabase
-        .from('lancamentos_plantoes')
-        .select('id, data_plantao, total_horas, profissao, tipo_plantao, status, valor_cobrado_cliente, valor_repasse_cooperado, cooperados(id, nome), hospitals(id, nome), sectors(id, nome)')
-        .gte('data_plantao', periodoCalc.inicio)
-        .lte('data_plantao', periodoCalc.fim)
-        .order('data_plantao', { ascending: true })
-        .range(from, from + PAGE - 1);
-      if (myId !== fetchIdRef.current) return;
-      if (error) { toast.error('Erro ao carregar relatórios: ' + error.message); break; }
-      all = [...all, ...((data ?? []) as unknown as LancRow[])];
-      if (!data || data.length < PAGE) break;
-      from += PAGE;
-    }
+    const { data, error } = await supabase
+      .rpc('relatorio_consolidado', { p_inicio: periodoCalc.inicio, p_fim: periodoCalc.fim });
     if (myId !== fetchIdRef.current) return;
-    setRows(all);
+    if (error) { toast.error('Erro ao carregar relatórios: ' + error.message); }
+    setRows((data ?? []) as AggRow[]);
     setLoading(false);
   }, [periodoCalc.inicio, periodoCalc.fim]);
 
@@ -416,9 +397,9 @@ export default function Relatorios() {
   );
 
   const filtered = useMemo(() => rows.filter(r => {
-    if (filterHospital !== 'all' && r.hospitals?.id !== filterHospital) return false;
-    if (filterSetor !== 'all' && r.sectors?.id !== filterSetor) return false;
-    if (filterCooperado !== 'all' && r.cooperados?.id !== filterCooperado) return false;
+    if (filterHospital !== 'all' && r.hospital_id !== filterHospital) return false;
+    if (filterSetor !== 'all' && r.setor_id !== filterSetor) return false;
+    if (filterCooperado !== 'all' && r.cooperado_id !== filterCooperado) return false;
     if (filterProfissao !== 'all' && r.profissao !== filterProfissao) return false;
     return true;
   }), [rows, filterHospital, filterSetor, filterCooperado, filterProfissao]);
@@ -426,50 +407,47 @@ export default function Relatorios() {
   const totalCliente = filtered.reduce((s, r) => s + Number(r.valor_cobrado_cliente), 0);
   const totalCooperado = filtered.reduce((s, r) => s + Number(r.valor_repasse_cooperado), 0);
   const totalHoras = filtered.reduce((s, r) => s + Number(r.total_horas), 0);
-  const clientesAtivos = new Set(filtered.map(r => r.hospitals?.id).filter(Boolean)).size;
-  const cooperadosAtivos = new Set(filtered.map(r => r.cooperados?.id).filter(Boolean)).size;
-  const totalDiurnos = filtered.filter(r => r.tipo_plantao === 'normal').length;
-  const totalNoturnos = filtered.filter(r => r.tipo_plantao === 'extra').length;
-  const totalDiaristas = filtered.filter(r => r.tipo_plantao === 'diarista').length;
+  const clientesAtivos = new Set(filtered.map(r => r.hospital_id).filter(Boolean)).size;
+  const cooperadosAtivos = new Set(filtered.map(r => r.cooperado_id).filter(Boolean)).size;
+  const totalDiurnos = filtered.filter(r => r.tipo_plantao === 'normal').reduce((s, r) => s + Number(r.qtd), 0);
+  const totalNoturnos = filtered.filter(r => r.tipo_plantao === 'extra').reduce((s, r) => s + Number(r.qtd), 0);
+  const totalDiaristas = filtered.filter(r => r.tipo_plantao === 'diarista').reduce((s, r) => s + Number(r.qtd), 0);
+  const totalPlantoes = totalDiurnos + totalNoturnos + totalDiaristas;
 
   const setorCards = useMemo(() => {
     const map = new Map<string, {
       nome: string;
-      coops: Map<string, { nome: string; profissao: string; diurno: LancRow[]; noturno: LancRow[]; diarista: LancRow[] }>;
+      coops: Map<string, { nome: string; profissao: string; diurno: number; noturno: number; diarista: number; horas: number; valorCliente: number; valorCooperado: number }>;
     }>();
 
     filtered.forEach(r => {
-      const sId = r.sectors?.id ?? '_sem_setor_';
-      const sNome = r.sectors?.nome ?? 'Sem setor';
-      if (!map.has(sId)) map.set(sId, { nome: sNome, coops: new Map() });
-      const setor = map.get(sId)!;
-
-      const cId = r.cooperados?.id ?? '_sem_coop_';
-      if (!setor.coops.has(cId)) {
-        setor.coops.set(cId, { nome: r.cooperados?.nome ?? 'Sem cooperado', profissao: r.profissao, diurno: [], noturno: [], diarista: [] });
+      if (!map.has(r.setor_id)) map.set(r.setor_id, { nome: r.setor_nome, coops: new Map() });
+      const setor = map.get(r.setor_id)!;
+      if (!setor.coops.has(r.cooperado_id)) {
+        setor.coops.set(r.cooperado_id, { nome: r.cooperado_nome, profissao: r.profissao, diurno: 0, noturno: 0, diarista: 0, horas: 0, valorCliente: 0, valorCooperado: 0 });
       }
-      const coop = setor.coops.get(cId)!;
-      if (r.tipo_plantao === 'normal') coop.diurno.push(r);
-      else if (r.tipo_plantao === 'diarista') coop.diarista.push(r);
-      else coop.noturno.push(r);
+      const coop = setor.coops.get(r.cooperado_id)!;
+      if (r.tipo_plantao === 'normal') coop.diurno += Number(r.qtd);
+      else if (r.tipo_plantao === 'diarista') coop.diarista += Number(r.qtd);
+      else coop.noturno += Number(r.qtd);
+      coop.horas += Number(r.total_horas);
+      coop.valorCliente += Number(r.valor_cobrado_cliente);
+      coop.valorCooperado += Number(r.valor_repasse_cooperado);
     });
 
     return [...map.entries()].map(([sId, setor]) => {
-      const cooperados = [...setor.coops.entries()].map(([cId, c]) => {
-        const all = [...c.diurno, ...c.noturno, ...c.diarista];
-        return {
-          key: cId,
-          nome: c.nome,
-          profissao: c.profissao,
-          diurnos: c.diurno.length,
-          noturnos: c.noturno.length,
-          diaristas: c.diarista.length,
-          totalPlantoes: all.length,
-          totalHoras: all.reduce((s, r) => s + Number(r.total_horas), 0),
-          valorCliente: all.reduce((s, r) => s + Number(r.valor_cobrado_cliente), 0),
-          valorCooperado: all.reduce((s, r) => s + Number(r.valor_repasse_cooperado), 0),
-        };
-      }).sort((a, b) => ordenacao === 'nome' ? a.nome.localeCompare(b.nome) : b.valorCooperado - a.valorCooperado);
+      const cooperados = [...setor.coops.entries()].map(([cId, c]) => ({
+        key: cId,
+        nome: c.nome,
+        profissao: c.profissao,
+        diurnos: c.diurno,
+        noturnos: c.noturno,
+        diaristas: c.diarista,
+        totalPlantoes: c.diurno + c.noturno + c.diarista,
+        totalHoras: c.horas,
+        valorCliente: c.valorCliente,
+        valorCooperado: c.valorCooperado,
+      })).sort((a, b) => ordenacao === 'nome' ? a.nome.localeCompare(b.nome) : b.valorCooperado - a.valorCooperado);
 
       return {
         key: sId,
@@ -620,7 +598,7 @@ export default function Relatorios() {
               </button>
             </div>
             <div className="text-sm text-muted-foreground">
-              {loading ? 'Carregando…' : `${filtered.length} lançamento${filtered.length !== 1 ? 's' : ''}`}
+              {loading ? 'Carregando…' : `${totalPlantoes} lançamento${totalPlantoes !== 1 ? 's' : ''}`}
             </div>
           </div>
         </CardContent>
@@ -743,7 +721,7 @@ export default function Relatorios() {
               <span className="text-xs uppercase tracking-wider text-muted-foreground">Total geral</span>
               <span>{totalDiurnos} diurno{totalDiurnos !== 1 ? 's' : ''}</span>
               <span>{totalNoturnos} noturno{totalNoturnos !== 1 ? 's' : ''}</span>
-              <span className="text-muted-foreground">{filtered.length} plantão{filtered.length !== 1 ? 'ões' : ''}</span>
+              <span className="text-muted-foreground">{totalPlantoes} plantão{totalPlantoes !== 1 ? 'ões' : ''}</span>
               <span className="text-muted-foreground tabular-nums">{totalHoras.toFixed(1)}h produzidas</span>
             </div>
             {mostrarValores && (
