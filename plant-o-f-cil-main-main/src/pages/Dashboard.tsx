@@ -23,12 +23,9 @@ interface RecentRow {
   hospitals: { nome: string } | null;
   sectors: { nome: string } | null;
 }
-interface ChartRow {
-  id: string; data_plantao: string;
-  valor_cobrado_cliente: number; valor_repasse_cooperado: number;
-  hospital_id: string | null; hospital_nome: string;
-  sector_id: string | null; sector_nome: string;
-}
+interface RpcMensal  { ano_mes: string; faturamento: number; repasse: number; plantoes: number; }
+interface RpcCliente { hospital_id: string; nome: string; faturamento: number; }
+interface RpcSetor   { setor_id: string; nome: string; faturamento: number; }
 interface Hospital { id: string; nome: string; }
 interface Sector   { id: string; nome: string; hospital_id: string; }
 
@@ -55,7 +52,9 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
 
   // ── Estado dos gráficos ──
-  const [chartRows, setChartRows] = useState<ChartRow[]>([]);
+  const [dadosMensaisRpc,    setDadosMensaisRpc]    = useState<RpcMensal[]>([]);
+  const [dadosPorClienteRpc, setDadosPorClienteRpc] = useState<RpcCliente[]>([]);
+  const [dadosPorSetorRpc,   setDadosPorSetorRpc]   = useState<RpcSetor[]>([]);
   const [hospitals, setHospitals] = useState<Hospital[]>([]);
   const [sectors, setSectors]     = useState<Sector[]>([]);
   const [loadingChart, setLoadingChart] = useState(true);
@@ -80,16 +79,14 @@ export default function Dashboard() {
       const inicioMes = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
       const fimMes    = new Date(today.getFullYear(), today.getMonth() + 1, 0).toISOString().slice(0, 10);
 
-      const { data: lancs } = await supabase
-        .from('lancamentos_plantoes')
-        .select('valor_cobrado_cliente, valor_repasse_cooperado, status')
-        .gte('data_plantao', inicioMes)
-        .lte('data_plantao', fimMes);
+      const { data: kpiData } = await supabase
+        .rpc('dashboard_kpi', { p_inicio: inicioMes, p_fim: fimMes });
 
-      const totalPlantoes = lancs?.length ?? 0;
-      const faturamento   = lancs?.reduce((s, r) => s + Number(r.valor_cobrado_cliente), 0) ?? 0;
-      const repasse       = lancs?.reduce((s, r) => s + Number(r.valor_repasse_cooperado), 0) ?? 0;
-      const pendentes     = lancs?.filter(r => r.status === 'lancado').length ?? 0;
+      const kpiRow        = kpiData?.[0];
+      const totalPlantoes = Number(kpiRow?.total_plantoes ?? 0);
+      const faturamento   = Number(kpiRow?.faturamento ?? 0);
+      const repasse       = Number(kpiRow?.repasse ?? 0);
+      const pendentes     = 0;
 
       const { data: rec } = await supabase
         .from('lancamentos_plantoes')
@@ -112,42 +109,27 @@ export default function Dashboard() {
       const [anoFim, mesFimN] = periodoFim.split('-').map(Number);
       const fim = new Date(anoFim, mesFimN, 0).toISOString().slice(0, 10); // último dia do mês fim
 
-      const [{ data: lancs }, { data: hosp }, { data: sects }] = await Promise.all([
-        supabase
-          .from('lancamentos_plantoes')
-          .select('id, data_plantao, valor_cobrado_cliente, valor_repasse_cooperado, hospital_id, hospitals(id, nome), sectors(id, nome)')
-          .gte('data_plantao', inicio)
-          .lte('data_plantao', fim)
-          .order('data_plantao', { ascending: true }),
+      const hospId  = filtroHospital === '__todos__' ? null : filtroHospital;
+      const setorId = filtroSetor   === '__todos__' ? null : filtroSetor;
+
+      const [{ data: mensal }, { data: porCliente }, { data: porSetor }, { data: hosp }, { data: sects }] = await Promise.all([
+        supabase.rpc('dashboard_mensal',      { p_inicio: inicio, p_fim: fim, p_hospital_id: hospId, p_setor_id: setorId }),
+        supabase.rpc('dashboard_por_cliente', { p_inicio: inicio, p_fim: fim, p_setor_id: setorId }),
+        supabase.rpc('dashboard_por_setor',   { p_inicio: inicio, p_fim: fim, p_hospital_id: hospId }),
         supabase.from('hospitals').select('id, nome').order('nome'),
         supabase.from('sectors').select('id, nome, hospital_id').eq('ativo', true).order('nome'),
       ]);
 
-      const rows: ChartRow[] = (lancs ?? []).map((r: any) => ({
-        id: r.id,
-        data_plantao: r.data_plantao,
-        valor_cobrado_cliente: Number(r.valor_cobrado_cliente),
-        valor_repasse_cooperado: Number(r.valor_repasse_cooperado),
-        hospital_id: r.hospital_id,
-        hospital_nome: r.hospitals?.nome ?? 'Sem cliente',
-        sector_id: r.sectors?.id ?? null,
-        sector_nome: r.sectors?.nome ?? 'Sem setor',
-      }));
-
-      setChartRows(rows);
+      setDadosMensaisRpc(mensal ?? []);
+      setDadosPorClienteRpc(porCliente ?? []);
+      setDadosPorSetorRpc(porSetor ?? []);
       setHospitals(hosp ?? []);
       setSectors((sects ?? []) as Sector[]);
       setLoadingChart(false);
     })();
-  }, [hasFinanceiroAccess, periodoInicio, periodoFim]);
+  }, [hasFinanceiroAccess, periodoInicio, periodoFim, filtroHospital, filtroSetor]);
 
-  // ── Dados filtrados ────────────────────────────────────────────────────────
-  const rowsFiltrados = useMemo(() => chartRows.filter(r => {
-    if (filtroHospital !== '__todos__' && r.hospital_id !== filtroHospital) return false;
-    if (filtroSetor    !== '__todos__' && r.sector_id    !== filtroSetor)    return false;
-    return true;
-  }), [chartRows, filtroHospital, filtroSetor]);
-
+  // ── Dropdown de setores filtrado por hospital ──────────────────────────────
   const setoresFiltro = useMemo(() =>
     filtroHospital === '__todos__' ? sectors : sectors.filter(s => s.hospital_id === filtroHospital),
   [sectors, filtroHospital]);
@@ -173,30 +155,25 @@ export default function Dashboard() {
       mapa[key] = { mes: `${MESES[mes - 1]}/${String(ano).slice(2)}`, faturamento: 0, repasse: 0, plantoes: 0 };
       mes++; if (mes > 12) { mes = 1; ano++; }
     }
-    rowsFiltrados.forEach(r => {
-      const key = r.data_plantao.slice(0, 7);
-      if (mapa[key]) {
-        mapa[key].faturamento += r.valor_cobrado_cliente;
-        mapa[key].repasse     += r.valor_repasse_cooperado;
-        mapa[key].plantoes    += 1;
+    dadosMensaisRpc.forEach(r => {
+      if (mapa[r.ano_mes]) {
+        mapa[r.ano_mes].faturamento = Number(r.faturamento);
+        mapa[r.ano_mes].repasse     = Number(r.repasse);
+        mapa[r.ano_mes].plantoes    = Number(r.plantoes);
       }
     });
     return Object.values(mapa);
-  }, [rowsFiltrados, periodoInicio, periodoFim]);
+  }, [dadosMensaisRpc, periodoInicio, periodoFim]);
 
   // ── Gráfico 2: Por cliente (pizza) ────────────────────────────────────────
-  const dadosPorCliente = useMemo(() => {
-    const mapa: Record<string, number> = {};
-    rowsFiltrados.forEach(r => { mapa[r.hospital_nome] = (mapa[r.hospital_nome] ?? 0) + r.valor_cobrado_cliente; });
-    return Object.entries(mapa).sort((a, b) => b[1] - a[1]).map(([nome, valor]) => ({ nome, valor }));
-  }, [rowsFiltrados]);
+  const dadosPorCliente = useMemo(() =>
+    dadosPorClienteRpc.map(r => ({ nome: r.nome, valor: Number(r.faturamento) })),
+  [dadosPorClienteRpc]);
 
   // ── Gráfico 3: Por setor (barras horizontais) ─────────────────────────────
-  const dadosPorSetor = useMemo(() => {
-    const mapa: Record<string, number> = {};
-    rowsFiltrados.forEach(r => { mapa[r.sector_nome] = (mapa[r.sector_nome] ?? 0) + r.valor_cobrado_cliente; });
-    return Object.entries(mapa).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([nome, valor]) => ({ nome, valor }));
-  }, [rowsFiltrados]);
+  const dadosPorSetor = useMemo(() =>
+    dadosPorSetorRpc.map(r => ({ nome: r.nome, valor: Number(r.faturamento) })),
+  [dadosPorSetorRpc]);
 
   // ── KPI cards (existentes) ─────────────────────────────────────────────────
   const cards = [
