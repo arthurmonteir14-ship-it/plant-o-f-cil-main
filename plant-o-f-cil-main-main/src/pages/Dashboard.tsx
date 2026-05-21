@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Plus, ListChecks, Wallet, HandCoins, Clock } from 'lucide-react';
+import { Plus, ListChecks, Wallet, HandCoins, Clock, BarChart2, CalendarDays, TrendingUp, TrendingDown } from 'lucide-react';
 import { formatCurrency, formatDate, profissaoLabel } from '@/lib/format';
 import { StatusBadge } from '@/components/StatusBadge';
 import { useAuth } from '@/hooks/useAuth';
@@ -152,6 +152,9 @@ export default function Dashboard() {
     filtroHospital === '__todos__' ? sectors : sectors.filter(s => s.hospital_id === filtroHospital),
   [sectors, filtroHospital]);
 
+  // ── Modo: individual por mês ou comparação ────────────────────────────────
+  const [modoComparacao, setModoComparacao] = useState(false);
+
   // helper — atalho de período
   const aplicarAtalho = (meses: number) => {
     const d = new Date(hoje.getFullYear(), hoje.getMonth() - (meses - 1), 1);
@@ -161,14 +164,13 @@ export default function Dashboard() {
 
   // ── Gráfico 1: Faturamento mensal (barras) ─────────────────────────────────
   const dadosMensais = useMemo(() => {
-    const mapa: Record<string, { mes: string; faturamento: number; repasse: number }> = {};
-    // gera todos os meses do período selecionado
+    const mapa: Record<string, { mes: string; faturamento: number; repasse: number; plantoes: number }> = {};
     const [anoI, mesI] = periodoInicio.split('-').map(Number);
     const [anoF, mesF] = periodoFim.split('-').map(Number);
     let ano = anoI; let mes = mesI;
     while (ano < anoF || (ano === anoF && mes <= mesF)) {
       const key = `${ano}-${String(mes).padStart(2, '0')}`;
-      mapa[key] = { mes: `${MESES[mes - 1]}/${String(ano).slice(2)}`, faturamento: 0, repasse: 0 };
+      mapa[key] = { mes: `${MESES[mes - 1]}/${String(ano).slice(2)}`, faturamento: 0, repasse: 0, plantoes: 0 };
       mes++; if (mes > 12) { mes = 1; ano++; }
     }
     rowsFiltrados.forEach(r => {
@@ -176,6 +178,7 @@ export default function Dashboard() {
       if (mapa[key]) {
         mapa[key].faturamento += r.valor_cobrado_cliente;
         mapa[key].repasse     += r.valor_repasse_cooperado;
+        mapa[key].plantoes    += 1;
       }
     });
     return Object.values(mapa);
@@ -248,7 +251,19 @@ export default function Dashboard() {
           {/* ── SEÇÃO DE GRÁFICOS ── */}
           <div>
             <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
-              <h2 className="text-lg font-bold">Faturamento — Análise Gráfica</h2>
+              <div className="flex items-center gap-3">
+                <h2 className="text-lg font-bold">Faturamento — Análise Gráfica</h2>
+                <Button
+                  size="sm"
+                  variant={modoComparacao ? 'default' : 'outline'}
+                  className="gap-1.5 h-8 text-xs"
+                  onClick={() => setModoComparacao(v => !v)}
+                >
+                  {modoComparacao
+                    ? <><CalendarDays className="h-3.5 w-3.5" /> Ver Mês a Mês</>
+                    : <><BarChart2 className="h-3.5 w-3.5" /> Comparar Todos os Meses</>}
+                </Button>
+              </div>
               {/* Filtros dos gráficos */}
               <div className="flex flex-wrap gap-3 items-end">
                 {/* Atalhos rápidos */}
@@ -313,6 +328,69 @@ export default function Dashboard() {
 
             {loadingChart ? (
               <div className="p-10 text-center text-sm text-muted-foreground">Carregando gráficos…</div>
+            ) : !modoComparacao ? (
+              /* ── Vista individual: um card por mês ── */
+              <div>
+                {dadosMensais.length === 0 ? (
+                  <p className="text-sm text-muted-foreground text-center py-10">Sem dados no período.</p>
+                ) : (() => {
+                  const maxFat = Math.max(...dadosMensais.map(m => m.faturamento));
+                  return (
+                    <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
+                      {dadosMensais.map((m, i) => {
+                        const prev = dadosMensais[i - 1];
+                        const varPct = prev && prev.faturamento > 0
+                          ? ((m.faturamento - prev.faturamento) / prev.faturamento) * 100
+                          : null;
+                        const isBest = m.faturamento > 0 && m.faturamento === maxFat;
+                        const semDados = m.faturamento === 0 && m.plantoes === 0;
+                        return (
+                          <Card key={m.mes} className={`relative overflow-hidden transition-shadow hover:shadow-md ${isBest ? 'ring-2 ring-primary' : ''}`}>
+                            {isBest && (
+                              <div className="absolute top-0 right-0 bg-primary text-white text-[10px] font-bold px-2 py-0.5 rounded-bl-lg">
+                                MELHOR MÊS
+                              </div>
+                            )}
+                            <CardContent className="p-4">
+                              <p className="text-sm font-bold text-muted-foreground mb-2">{m.mes}</p>
+                              {semDados ? (
+                                <p className="text-xs text-muted-foreground italic">Sem lançamentos</p>
+                              ) : (
+                                <>
+                                  <p className="text-xl font-bold tabular-nums text-primary leading-tight">
+                                    {formatCurrency(m.faturamento)}
+                                  </p>
+                                  <p className="text-[11px] text-muted-foreground mt-0.5">Faturamento</p>
+
+                                  {varPct !== null && (
+                                    <div className={`flex items-center gap-1 mt-1.5 text-xs font-semibold ${varPct >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+                                      {varPct >= 0
+                                        ? <TrendingUp className="h-3.5 w-3.5" />
+                                        : <TrendingDown className="h-3.5 w-3.5" />}
+                                      {varPct >= 0 ? '+' : ''}{varPct.toFixed(1)}% vs mês anterior
+                                    </div>
+                                  )}
+
+                                  <div className="mt-2 pt-2 border-t space-y-0.5">
+                                    <div className="flex justify-between text-[11px]">
+                                      <span className="text-muted-foreground">Repasse</span>
+                                      <span className="tabular-nums font-medium">{formatCurrency(m.repasse)}</span>
+                                    </div>
+                                    <div className="flex justify-between text-[11px]">
+                                      <span className="text-muted-foreground">Plantões</span>
+                                      <span className="tabular-nums font-medium">{m.plantoes}</span>
+                                    </div>
+                                  </div>
+                                </>
+                              )}
+                            </CardContent>
+                          </Card>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+              </div>
             ) : (
               <div className="space-y-5">
 
