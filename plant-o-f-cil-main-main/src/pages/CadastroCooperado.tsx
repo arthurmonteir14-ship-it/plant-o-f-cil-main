@@ -24,6 +24,10 @@ interface Cooperado {
   rg: string | null; pis_inss: string | null;
   banco: string | null; agencia: string | null; conta: string | null;
   tipo_conta: string | null; pix: string | null; observacoes: string | null;
+  cep: string | null; logradouro: string | null; numero: string | null;
+  complemento: string | null; bairro: string | null; cidade: string | null;
+  estado_uf: string | null; estado_civil: string | null;
+  sexo: string | null; raca_cor: string | null;
 }
 
 const profissoes = Object.entries(profissaoLabel) as [string, string][];
@@ -33,6 +37,9 @@ const maskCPF = (v: string) =>
     .replace(/(\d{3})(\d)/, '$1.$2')
     .replace(/(\d{3})(\d)/, '$1.$2')
     .replace(/(\d{3})(\d{1,2})$/, '$1-$2');
+
+const maskCEP = (v: string) =>
+  v.replace(/\D/g, '').slice(0, 8).replace(/(\d{5})(\d)/, '$1-$2');
 
 const validarCPF = (cpf: string): boolean => {
   const n = cpf.replace(/\D/g, '');
@@ -49,6 +56,8 @@ const emptyForm = {
   rg: '', pis_inss: '',
   banco: '', agencia: '', conta: '', tipo_conta: 'corrente', pix: '',
   observacoes: '',
+  cep: '', logradouro: '', numero: '', complemento: '', bairro: '', cidade: '', estado_uf: '',
+  estado_civil: '', sexo: '', raca_cor: '',
 };
 
 export default function CadastroCooperado() {
@@ -56,6 +65,7 @@ export default function CadastroCooperado() {
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [buscandoCEP, setBuscandoCEP] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [form, setForm] = useState({ ...emptyForm });
@@ -98,8 +108,35 @@ export default function CadastroCooperado() {
       banco: r.banco ?? '', agencia: r.agencia ?? '', conta: r.conta ?? '',
       tipo_conta: r.tipo_conta ?? 'corrente', pix: r.pix ?? '',
       observacoes: r.observacoes ?? '',
+      cep: r.cep ?? '', logradouro: r.logradouro ?? '', numero: r.numero ?? '',
+      complemento: r.complemento ?? '', bairro: r.bairro ?? '',
+      cidade: r.cidade ?? '', estado_uf: r.estado_uf ?? '',
+      estado_civil: r.estado_civil ?? '', sexo: r.sexo ?? '', raca_cor: r.raca_cor ?? '',
     });
     setOpen(true);
+  };
+
+  const buscarCEP = async (cep: string) => {
+    const raw = cep.replace(/\D/g, '');
+    if (raw.length !== 8) return;
+    setBuscandoCEP(true);
+    try {
+      const res = await fetch(`https://viacep.com.br/ws/${raw}/json/`);
+      const data = await res.json();
+      if (data.erro) { toast.error('CEP não encontrado'); return; }
+      setForm(prev => ({
+        ...prev,
+        logradouro: data.logradouro ?? prev.logradouro,
+        bairro: data.bairro ?? prev.bairro,
+        cidade: data.localidade ?? prev.cidade,
+        estado_uf: data.uf ?? prev.estado_uf,
+        complemento: data.complemento ?? prev.complemento,
+      }));
+    } catch {
+      toast.error('Erro ao buscar CEP');
+    } finally {
+      setBuscandoCEP(false);
+    }
   };
 
   const salvar = async () => {
@@ -123,6 +160,16 @@ export default function CadastroCooperado() {
       tipo_conta: form.tipo_conta || null,
       pix: form.pix.trim() || null,
       observacoes: form.observacoes.trim() || null,
+      cep: form.cep.replace(/\D/g, '') || null,
+      logradouro: form.logradouro.trim() || null,
+      numero: form.numero.trim() || null,
+      complemento: form.complemento.trim() || null,
+      bairro: form.bairro.trim() || null,
+      cidade: form.cidade.trim() || null,
+      estado_uf: form.estado_uf.trim() || null,
+      estado_civil: form.estado_civil || null,
+      sexo: form.sexo || null,
+      raca_cor: form.raca_cor || null,
     };
     const { error } = editId
       ? await supabase.from('cooperados').update(payload as never).eq('id', editId)
@@ -254,8 +301,9 @@ export default function CadastroCooperado() {
           </DialogHeader>
 
           <Tabs defaultValue="pessoal" className="mt-2">
-            <TabsList className="grid w-full grid-cols-4">
+            <TabsList className="grid w-full grid-cols-5">
               <TabsTrigger value="pessoal">Pessoal</TabsTrigger>
+              <TabsTrigger value="endereco">Endereço</TabsTrigger>
               <TabsTrigger value="profissional">Profissional</TabsTrigger>
               <TabsTrigger value="bancario">Bancário</TabsTrigger>
               <TabsTrigger value="obs">Observações</TabsTrigger>
@@ -294,6 +342,92 @@ export default function CadastroCooperado() {
                 <div>
                   <Label>E-mail</Label>
                   <Input type="email" value={form.email} onChange={e => f('email', e.target.value)} placeholder="cooperado@email.com" />
+                </div>
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <Label>Estado civil</Label>
+                  <Select value={form.estado_civil} onValueChange={v => f('estado_civil', v)}>
+                    <SelectTrigger><SelectValue placeholder="Selecione" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="solteiro">Solteiro(a)</SelectItem>
+                      <SelectItem value="casado">Casado(a)</SelectItem>
+                      <SelectItem value="uniao_estavel">União Estável</SelectItem>
+                      <SelectItem value="divorciado">Divorciado(a)</SelectItem>
+                      <SelectItem value="viuvo">Viúvo(a)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Sexo</Label>
+                  <Select value={form.sexo} onValueChange={v => f('sexo', v)}>
+                    <SelectTrigger><SelectValue placeholder="Selecione" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="masculino">Masculino</SelectItem>
+                      <SelectItem value="feminino">Feminino</SelectItem>
+                      <SelectItem value="outro">Outro</SelectItem>
+                      <SelectItem value="nao_informado">Prefiro não informar</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Raça / Cor</Label>
+                  <Select value={form.raca_cor} onValueChange={v => f('raca_cor', v)}>
+                    <SelectTrigger><SelectValue placeholder="Selecione" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="branca">Branca</SelectItem>
+                      <SelectItem value="preta">Preta</SelectItem>
+                      <SelectItem value="parda">Parda</SelectItem>
+                      <SelectItem value="amarela">Amarela</SelectItem>
+                      <SelectItem value="indigena">Indígena</SelectItem>
+                      <SelectItem value="nao_informado">Prefiro não informar</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            </TabsContent>
+
+            <TabsContent value="endereco" className="space-y-3 mt-4">
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <Label>CEP</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      value={form.cep}
+                      onChange={e => f('cep', maskCEP(e.target.value))}
+                      onBlur={e => buscarCEP(e.target.value)}
+                      placeholder="00000-000"
+                    />
+                    {buscandoCEP && <Loader2 className="h-4 w-4 animate-spin mt-2.5 shrink-0" />}
+                  </div>
+                </div>
+                <div className="col-span-2">
+                  <Label>Logradouro</Label>
+                  <Input value={form.logradouro} onChange={e => f('logradouro', e.target.value)} placeholder="Rua, Av., etc." />
+                </div>
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <Label>Número</Label>
+                  <Input value={form.numero} onChange={e => f('numero', e.target.value)} placeholder="Ex.: 123" />
+                </div>
+                <div className="col-span-2">
+                  <Label>Complemento</Label>
+                  <Input value={form.complemento} onChange={e => f('complemento', e.target.value)} placeholder="Apto, bloco, etc." />
+                </div>
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <Label>Bairro</Label>
+                  <Input value={form.bairro} onChange={e => f('bairro', e.target.value)} placeholder="Bairro" />
+                </div>
+                <div>
+                  <Label>Cidade</Label>
+                  <Input value={form.cidade} onChange={e => f('cidade', e.target.value)} placeholder="Cidade" />
+                </div>
+                <div>
+                  <Label>UF</Label>
+                  <Input value={form.estado_uf} onChange={e => f('estado_uf', e.target.value.toUpperCase().slice(0, 2))} placeholder="ES" />
                 </div>
               </div>
             </TabsContent>
