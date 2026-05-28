@@ -140,14 +140,8 @@ export default function RelatorioFaturamento() {
       <div className="max-w-5xl mx-auto px-8 py-8 bg-white min-h-screen">
 
         {/* Cabeçalho */}
-        <div className="flex items-start justify-between pb-6 mb-8 border-b-2" style={{ borderColor: NAVY }}>
-          <div className="flex items-center gap-4">
-            <img src="/logo-cades.svg" alt="CADES" className="h-16 w-16" />
-            <div>
-              <h1 className="text-2xl font-bold tracking-tight" style={{ color: NAVY }}>CADES</h1>
-              <p className="text-sm text-gray-500">Cooperativa de Saúde</p>
-            </div>
-          </div>
+        <div className="flex items-center justify-between pb-6 mb-8 border-b-2" style={{ borderColor: NAVY }}>
+          <img src="/logo-cades-oficial.png" alt="CADES" className="h-20 object-contain" />
           <div className="text-right">
             <h2 className="text-xl font-bold" style={{ color: NAVY }}>Análise de Faturamento</h2>
             <p className="text-sm text-gray-600 mt-1">Período: <strong>{periodo}</strong></p>
