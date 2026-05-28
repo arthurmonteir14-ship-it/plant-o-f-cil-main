@@ -141,7 +141,7 @@ export default function RelatorioFaturamento() {
 
         {/* Cabeçalho */}
         <div className="flex items-center justify-between pb-6 mb-8 border-b-2" style={{ borderColor: NAVY }}>
-          <img src="/logo-cades-oficial.png" alt="CADES" className="h-20 object-contain" />
+          <img src="/cades-logo.png" alt="CADES" className="h-20 object-contain" />
           <div className="text-right">
             <h2 className="text-xl font-bold" style={{ color: NAVY }}>Análise de Faturamento</h2>
             <p className="text-sm text-gray-600 mt-1">Período: <strong>{periodo}</strong></p>
