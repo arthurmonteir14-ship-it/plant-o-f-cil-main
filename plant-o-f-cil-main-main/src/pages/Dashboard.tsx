@@ -269,6 +269,17 @@ export default function Dashboard() {
                     ))}
                   </div>
                 </div>
+                {/* Mês único */}
+                <div>
+                  <Label className="text-xs">Mês</Label>
+                  <input
+                    type="month"
+                    value={periodoInicio === periodoFim ? periodoInicio : ''}
+                    max={mesAtual}
+                    onChange={e => { setPeriodoInicio(e.target.value); setPeriodoFim(e.target.value); }}
+                    className="flex h-9 w-36 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                  />
+                </div>
                 {/* De */}
                 <div>
                   <Label className="text-xs">De</Label>

@@ -142,6 +142,12 @@ export default function RelatorioFaturamento() {
           <ArrowLeft className="h-4 w-4" /> Voltar
         </Button>
         <div className="flex items-center gap-2">
+          <Label className="text-xs">Mês</Label>
+          <input type="month" value={inicio === fim ? inicio : ''} max={mesAtual}
+            onChange={e => { setInicio(e.target.value); setFim(e.target.value); }}
+            className="h-8 rounded-md border border-input bg-background px-3 text-sm shadow-sm" />
+        </div>
+        <div className="flex items-center gap-2">
           <Label className="text-xs">De</Label>
           <input type="month" value={inicio} max={fim}
             onChange={e => setInicio(e.target.value)}
