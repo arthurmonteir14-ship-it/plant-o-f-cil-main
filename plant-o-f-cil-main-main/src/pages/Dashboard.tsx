@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Plus, ListChecks, Wallet, HandCoins, Clock, BarChart2, CalendarDays, TrendingUp, TrendingDown } from 'lucide-react';
+import { Plus, ListChecks, Wallet, HandCoins, Clock, BarChart2, CalendarDays, TrendingUp, TrendingDown, Printer } from 'lucide-react';
 import { formatCurrency, formatDate, profissaoLabel } from '@/lib/format';
 import { StatusBadge } from '@/components/StatusBadge';
 import { useAuth } from '@/hooks/useAuth';
@@ -230,6 +230,14 @@ export default function Dashboard() {
               <div className="flex items-center gap-3">
                 <h2 className="text-lg font-bold">Faturamento — Análise Gráfica</h2>
                 <Button
+                  size="sm"
+                  variant="outline"
+                  className="gap-1.5 h-8 text-xs"
+                  onClick={() => window.open(`/relatorio-faturamento?inicio=${periodoInicio}&fim=${periodoFim}`, '_blank')}
+                >
+                  <Printer className="h-3.5 w-3.5" /> Imprimir Relatório
+                </Button>
+              <Button
                   size="sm"
                   variant={modoComparacao ? 'default' : 'outline'}
                   className="gap-1.5 h-8 text-xs"

@@ -14,6 +14,7 @@ import CadastroCooperado from "./pages/CadastroCooperado";
 import CadastroCliente from "./pages/CadastroCliente";
 import Relatorios from "./pages/Relatorios";
 import Fechamento from "./pages/Fechamento";
+import RelatorioFaturamento from "./pages/RelatorioFaturamento";
 import NotFound from "./pages/NotFound";
 import Auth from "./pages/Auth";
 
@@ -45,6 +46,9 @@ const App = () => (
             } />
             <Route path="/financeiro/fechamento" element={
               <ProtectedRoute requireFinanceiro><AppLayout><Fechamento /></AppLayout></ProtectedRoute>
+            } />
+            <Route path="/relatorio-faturamento" element={
+              <ProtectedRoute requireFinanceiro><RelatorioFaturamento /></ProtectedRoute>
             } />
             <Route path="*" element={<NotFound />} />
           </Routes>
