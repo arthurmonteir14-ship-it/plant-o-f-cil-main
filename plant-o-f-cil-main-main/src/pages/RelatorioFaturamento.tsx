@@ -96,7 +96,6 @@ export default function RelatorioFaturamento() {
     if (maiorFat)  frases.push(`O cliente com maior volume foi ${maiorFat.nome}, representando ${kpi.faturamento > 0 ? ((maiorFat.faturamento / kpi.faturamento) * 100).toFixed(1) : 0}% do faturamento total (${formatCurrency(maiorFat.faturamento)}).`);
     if (maiorMarg) frases.push(`A maior margem operacional foi registrada em ${maiorMarg.nome}, com ${formatCurrency(maiorMarg.margem)} de diferença entre faturado e repassado.`);
     if (maiorPct)  frases.push(`O maior percentual de repasse foi de ${maiorPct.pctRepasse.toFixed(1)}%, referente ao cliente ${maiorPct.nome}.`);
-    alertas.forEach(a => frases.push(`⚠ Atenção: o cliente ${a.nome} apresentou percentual de repasse de ${a.pctRepasse.toFixed(1)}%, acima do limite recomendado de 80%.`));
     return frases;
   }, [kpi, clientes, clientesComMargem, margem, pctRepasse]);
 
@@ -282,7 +281,7 @@ export default function RelatorioFaturamento() {
               <div className="rounded-xl p-5 text-sm leading-relaxed space-y-3"
                 style={{ backgroundColor: '#f8f9fc', borderLeft: `4px solid ${NAVY}` }}>
                 {analise.map((texto, i) => (
-                  <p key={i} style={{ color: texto.startsWith('⚠') ? '#dc2626' : '#374151' }}>
+                  <p key={i} style={{ color: '#374151' }}>
                     {texto}
                   </p>
                 ))}
