@@ -114,11 +114,11 @@ export default function RelatorioFaturamento() {
     const alertas    = clientesComMargem.filter(c => c.pctRepasse > 80);
 
     const frases: string[] = [
-      `No período analisado, o faturamento total foi de ${formatCurrency(kpi.faturamento)}, com repasse de ${formatCurrency(kpi.repasse)} aos cooperados, resultando em margem operacional de ${formatCurrency(margem)} (${pctRepasse.toFixed(1)}% de repasse sobre o faturamento).`,
+      `No período analisado, o faturamento total foi de ${formatCurrency(kpi.faturamento)}, com repasse de ${formatCurrency(kpi.repasse)} aos cooperados, resultando em margem operacional de ${formatCurrency(margem)} (${pctRepasse.toFixed(2)}% de repasse sobre o faturamento).`,
     ];
-    if (maiorFat)  frases.push(`O cliente com maior volume foi ${maiorFat.nome}, representando ${kpi.faturamento > 0 ? ((maiorFat.faturamento / kpi.faturamento) * 100).toFixed(1) : 0}% do faturamento total (${formatCurrency(maiorFat.faturamento)}).`);
+    if (maiorFat)  frases.push(`O cliente com maior volume foi ${maiorFat.nome}, representando ${kpi.faturamento > 0 ? ((maiorFat.faturamento / kpi.faturamento) * 100).toFixed(2) : 0}% do faturamento total (${formatCurrency(maiorFat.faturamento)}).`);
     if (maiorMarg) frases.push(`A maior margem operacional foi registrada em ${maiorMarg.nome}, com ${formatCurrency(maiorMarg.margem)} de diferença entre faturado e repassado.`);
-    if (maiorPct)  frases.push(`O maior percentual de repasse foi de ${maiorPct.pctRepasse.toFixed(1)}%, referente ao cliente ${maiorPct.nome}.`);
+    if (maiorPct)  frases.push(`O maior percentual de repasse foi de ${maiorPct.pctRepasse.toFixed(2)}%, referente ao cliente ${maiorPct.nome}.`);
     return frases;
   }, [kpi, clientes, clientesComMargem, margem, pctRepasse]);
 
@@ -222,7 +222,7 @@ export default function RelatorioFaturamento() {
                   { label: 'Total Faturado',      value: formatCurrency(kpi?.faturamento ?? 0), color: NAVY  },
                   { label: 'Total Repassado',     value: formatCurrency(kpi?.repasse     ?? 0), color: GREEN },
                   { label: 'Margem Operacional',  value: formatCurrency(margem),                color: BLUE  },
-                  { label: '% de Repasse',        value: `${pctRepasse.toFixed(1)}%`,           color: '#d97706' },
+                  { label: '% de Repasse',        value: `${pctRepasse.toFixed(2)}%`,           color: '#d97706' },
                 ].map(card => (
                   <div key={card.label} className="rounded-xl border p-4" style={{ borderColor: '#e5e7eb' }}>
                     <p className="text-[10px] uppercase tracking-wider text-gray-400 font-semibold">{card.label}</p>
@@ -259,7 +259,7 @@ export default function RelatorioFaturamento() {
                       <td className="px-4 py-2.5 text-right tabular-nums" style={{ color: BLUE }}>{formatCurrency(c.margem)}</td>
                       <td className="px-4 py-2.5 text-right tabular-nums font-semibold"
                         style={{ color: c.pctRepasse > 80 ? '#dc2626' : '#374151' }}>
-                        {c.pctRepasse.toFixed(1)}%
+                        {c.pctRepasse.toFixed(2)}%
                       </td>
                     </tr>
                   ))}
@@ -268,7 +268,7 @@ export default function RelatorioFaturamento() {
                     <td className="px-4 py-2.5 text-right tabular-nums">{formatCurrency(kpi?.faturamento ?? 0)}</td>
                     <td className="px-4 py-2.5 text-right tabular-nums">{formatCurrency(kpi?.repasse ?? 0)}</td>
                     <td className="px-4 py-2.5 text-right tabular-nums">{formatCurrency(margem)}</td>
-                    <td className="px-4 py-2.5 text-right tabular-nums">{pctRepasse.toFixed(1)}%</td>
+                    <td className="px-4 py-2.5 text-right tabular-nums">{pctRepasse.toFixed(2)}%</td>
                   </tr>
                 </tbody>
               </table>
