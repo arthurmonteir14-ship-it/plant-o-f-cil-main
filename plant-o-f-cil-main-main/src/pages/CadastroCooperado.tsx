@@ -13,9 +13,12 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
-import { Plus, Loader2, Pencil, PowerOff, Search } from 'lucide-react';
+import { Plus, Loader2, Pencil, PowerOff, Search, FileDown } from 'lucide-react';
 import { profissaoLabel } from '@/lib/format';
 import { toast } from 'sonner';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
+import { Checkbox } from '@/components/ui/checkbox';
 
 interface Cooperado {
   id: string; nome: string; cpf: string | null; data_nascimento: string | null;
@@ -31,6 +34,64 @@ interface Cooperado {
 }
 
 const profissoes = Object.entries(profissaoLabel) as [string, string][];
+
+const CAMPOS_EXPORT = [
+  { key: 'profissao',             label: 'Categoria / Profissão' },
+  { key: 'cpf',                   label: 'CPF' },
+  { key: 'rg',                    label: 'RG' },
+  { key: 'pis_inss',              label: 'PIS / INSS' },
+  { key: 'data_nascimento',       label: 'Data de Nascimento' },
+  { key: 'telefone',              label: 'Telefone' },
+  { key: 'email',                 label: 'E-mail' },
+  { key: 'registro_profissional', label: 'Registro Profissional' },
+  { key: 'status',                label: 'Status' },
+  { key: 'endereco',              label: 'Endereço Completo' },
+  { key: 'estado_civil',          label: 'Estado Civil' },
+  { key: 'sexo',                  label: 'Sexo' },
+  { key: 'raca_cor',              label: 'Raça / Cor' },
+  { key: 'banco',                 label: 'Dados Bancários' },
+  { key: 'pix',                   label: 'PIX' },
+] as const;
+
+type CampoKey = typeof CAMPOS_EXPORT[number]['key'];
+
+const estadoCivilLabel: Record<string, string> = {
+  solteiro: 'Solteiro(a)', casado: 'Casado(a)', uniao_estavel: 'União Estável',
+  divorciado: 'Divorciado(a)', viuvo: 'Viúvo(a)',
+};
+const sexoLabel: Record<string, string> = {
+  masculino: 'Masculino', feminino: 'Feminino', outro: 'Outro', nao_informado: 'Não informado',
+};
+const racaCorLabel: Record<string, string> = {
+  branca: 'Branca', preta: 'Preta', parda: 'Parda',
+  amarela: 'Amarela', indigena: 'Indígena', nao_informado: 'Não informado',
+};
+
+const fmtData = (s: string | null) => s ? s.split('-').reverse().join('/') : '—';
+
+function getValorCampo(r: Cooperado, key: CampoKey): string {
+  switch (key) {
+    case 'profissao':             return profissaoLabel[r.profissao] ?? r.profissao;
+    case 'cpf':                   return r.cpf ? r.cpf.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4') : '—';
+    case 'rg':                    return r.rg ?? '—';
+    case 'pis_inss':              return r.pis_inss ?? '—';
+    case 'data_nascimento':       return fmtData(r.data_nascimento);
+    case 'telefone':              return r.telefone ?? '—';
+    case 'email':                 return r.email ?? '—';
+    case 'registro_profissional': return r.registro_profissional ?? '—';
+    case 'status':                return r.ativo ? 'Ativo' : 'Inativo';
+    case 'endereco': {
+      const parts = [r.logradouro, r.numero, r.complemento, r.bairro, r.cidade, r.estado_uf].filter(Boolean);
+      return parts.length ? parts.join(', ') : '—';
+    }
+    case 'estado_civil':          return estadoCivilLabel[r.estado_civil ?? ''] ?? '—';
+    case 'sexo':                  return sexoLabel[r.sexo ?? ''] ?? '—';
+    case 'raca_cor':              return racaCorLabel[r.raca_cor ?? ''] ?? '—';
+    case 'banco':                 return [r.banco, r.agencia && `Ag: ${r.agencia}`, r.conta && `Cc: ${r.conta}`].filter(Boolean).join(' / ') || '—';
+    case 'pix':                   return r.pix ?? '—';
+    default:                      return '—';
+  }
+}
 
 const maskCPF = (v: string) =>
   v.replace(/\D/g, '').slice(0, 11)
@@ -81,6 +142,13 @@ export default function CadastroCooperado() {
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [buscandoCEP, setBuscandoCEP] = useState(false);
+  const [modalExport, setModalExport] = useState(false);
+  const [camposSel, setCamposSel] = useState<Record<CampoKey, boolean>>({
+    profissao: true, cpf: true, rg: false, pis_inss: false,
+    data_nascimento: true, telefone: true, email: true,
+    registro_profissional: false, status: true, endereco: false,
+    estado_civil: false, sexo: false, raca_cor: false, banco: false, pix: false,
+  });
   const [editId, setEditId] = useState<string | null>(null);
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [form, setForm] = useState({ ...emptyForm });
@@ -205,6 +273,54 @@ export default function CadastroCooperado() {
     load();
   };
 
+  const camposAtivos = CAMPOS_EXPORT.filter(c => camposSel[c.key]);
+
+  const exportarPDF = () => {
+    const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+    const W = doc.internal.pageSize.getWidth();
+    doc.setFillColor(31, 41, 99);
+    doc.rect(0, 0, W, 22, 'F');
+    doc.setTextColor(255, 255, 255); doc.setFontSize(13); doc.setFont('helvetica', 'bold');
+    doc.text('CADES — Relação de Cooperados', 14, 10);
+    doc.setFontSize(8); doc.setFont('helvetica', 'normal'); doc.setTextColor(180, 200, 255);
+    doc.text(`Emitido em: ${new Date().toLocaleDateString('pt-BR')}  ·  ${filtered.length} cooperado(s)`, 14, 17);
+
+    autoTable(doc, {
+      startY: 26,
+      head: [['Nome', ...camposAtivos.map(c => c.label)]],
+      body: filtered.map(r => [r.nome, ...camposAtivos.map(c => getValorCampo(r, c.key))]),
+      styles: { fontSize: 7.5, cellPadding: 2.5 },
+      headStyles: { fillColor: [31, 41, 99], textColor: 255, fontStyle: 'bold' },
+      alternateRowStyles: { fillColor: [248, 249, 252] },
+      margin: { left: 14, right: 14 },
+    });
+
+    const total = (doc as unknown as { internal: { getNumberOfPages: () => number } }).internal.getNumberOfPages();
+    for (let i = 1; i <= total; i++) {
+      doc.setPage(i);
+      const H = doc.internal.pageSize.getHeight();
+      doc.setFillColor(31, 41, 99); doc.rect(0, H - 10, W, 10, 'F');
+      doc.setTextColor(200, 210, 255); doc.setFontSize(7);
+      doc.text('CADES Financeiro — Confidencial', 14, H - 3.5);
+      doc.text(`Página ${i} de ${total}`, W - 14, H - 3.5, { align: 'right' });
+    }
+    doc.save('relacao_cooperados.pdf');
+    setModalExport(false);
+  };
+
+  const exportarCSV = () => {
+    const header = ['Nome', ...camposAtivos.map(c => c.label)];
+    const lines = filtered.map(r =>
+      [r.nome, ...camposAtivos.map(c => getValorCampo(r, c.key))].map(v => `"${v}"`).join(';')
+    );
+    const csv = [header.join(';'), ...lines].join('\n');
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = 'relacao_cooperados.csv'; a.click();
+    URL.revokeObjectURL(url);
+    setModalExport(false);
+  };
+
   const f = (field: keyof typeof form, value: string | boolean) =>
     setForm(prev => ({ ...prev, [field]: value }));
 
@@ -215,9 +331,14 @@ export default function CadastroCooperado() {
           <h1 className="text-2xl md:text-3xl font-bold">Cadastro de Cooperados</h1>
           <p className="text-sm text-muted-foreground">Gerencie os cooperados da CADES</p>
         </div>
-        <Button className="gap-2" onClick={openNew}>
-          <Plus className="h-4 w-4" /> Novo cooperado
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" className="gap-2" onClick={() => setModalExport(true)}>
+            <FileDown className="h-4 w-4" /> Exportar relação
+          </Button>
+          <Button className="gap-2" onClick={openNew}>
+            <Plus className="h-4 w-4" /> Novo cooperado
+          </Button>
+        </div>
       </div>
 
       {/* Filtros */}
@@ -541,6 +662,39 @@ export default function CadastroCooperado() {
             <Button onClick={salvar} disabled={saving}>
               {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Salvar cooperado
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal exportar relação */}
+      <Dialog open={modalExport} onOpenChange={setModalExport}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Exportar relação de cooperados</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Serão exportados <strong>{filtered.length}</strong> cooperado(s) conforme os filtros ativos.
+            Selecione os campos que deseja incluir:
+          </p>
+          <div className="grid grid-cols-2 gap-2 py-2">
+            {CAMPOS_EXPORT.map(c => (
+              <label key={c.key} className="flex items-center gap-2 text-sm cursor-pointer select-none">
+                <Checkbox
+                  checked={camposSel[c.key]}
+                  onCheckedChange={v => setCamposSel(prev => ({ ...prev, [c.key]: !!v }))}
+                />
+                {c.label}
+              </label>
+            ))}
+          </div>
+          <DialogFooter className="gap-2 flex-wrap">
+            <Button variant="outline" onClick={() => setModalExport(false)}>Cancelar</Button>
+            <Button variant="outline" onClick={exportarCSV} disabled={camposAtivos.length === 0}>
+              <FileDown className="h-4 w-4 mr-1" /> CSV
+            </Button>
+            <Button onClick={exportarPDF} disabled={camposAtivos.length === 0}>
+              <FileDown className="h-4 w-4 mr-1" /> PDF
             </Button>
           </DialogFooter>
         </DialogContent>
