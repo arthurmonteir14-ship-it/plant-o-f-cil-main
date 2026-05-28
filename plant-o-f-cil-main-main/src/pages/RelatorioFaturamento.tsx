@@ -9,6 +9,7 @@ import {
 import { Printer, ArrowLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 const NAVY  = '#1a2f5a';
 const GREEN = '#16a34a';
@@ -29,6 +30,9 @@ function labelPeriodo(inicio: string, fim: string) {
   return `${MESES[mesI - 1]}/${anoI} a ${MESES[mesF - 1]}/${anoF}`;
 }
 
+interface Hospital { id: string; nome: string; }
+interface Sector   { id: string; nome: string; hospital_id: string; }
+
 export default function RelatorioFaturamento() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -39,9 +43,26 @@ export default function RelatorioFaturamento() {
   const [inicio, setInicio] = useState(searchParams.get('inicio') ?? mesAtual);
   const [fim,    setFim]    = useState(searchParams.get('fim')    ?? mesAtual);
 
+  const [hospitalId,   setHospitalId]   = useState(searchParams.get('hospital')     ?? '');
+  const [hospitalNome, setHospitalNome] = useState(searchParams.get('hospitalNome') ?? '');
+  const [setorId,      setSetorId]      = useState(searchParams.get('setor')        ?? '');
+  const [setorNome,    setSetorNome]    = useState(searchParams.get('setorNome')    ?? '');
+
+  const [hospitals, setHospitals] = useState<Hospital[]>([]);
+  const [sectors,   setSectors]   = useState<Sector[]>([]);
+
   const [kpi,      setKpi]      = useState<KpiData | null>(null);
   const [clientes, setClientes] = useState<ClienteRow[]>([]);
   const [loading,  setLoading]  = useState(true);
+
+  useEffect(() => {
+    supabase.from('hospitals').select('id, nome').order('nome').then(({ data }) => setHospitals(data ?? []));
+    supabase.from('sectors').select('id, nome, hospital_id').eq('ativo', true).order('nome').then(({ data }) => setSectors(data ?? []));
+  }, []);
+
+  const setoresFiltrados = useMemo(() =>
+    hospitalId ? sectors.filter(s => s.hospital_id === hospitalId) : sectors,
+  [sectors, hospitalId]);
 
   useEffect(() => {
     (async () => {
@@ -49,10 +70,12 @@ export default function RelatorioFaturamento() {
       const inicioDate = `${inicio}-01`;
       const [anoF, mesF] = fim.split('-').map(Number);
       const fimDate = new Date(anoF, mesF, 0).toISOString().slice(0, 10);
+      const hId = hospitalId || null;
+      const sId = setorId    || null;
 
       const [{ data: kpiData }, { data: clienteData }] = await Promise.all([
-        supabase.rpc('dashboard_kpi',        { p_inicio: inicioDate, p_fim: fimDate }),
-        supabase.rpc('relatorio_por_cliente', { p_inicio: inicioDate, p_fim: fimDate }),
+        supabase.rpc('dashboard_kpi',        { p_inicio: inicioDate, p_fim: fimDate, p_hospital_id: hId, p_setor_id: sId }),
+        supabase.rpc('relatorio_por_cliente', { p_inicio: inicioDate, p_fim: fimDate, p_hospital_id: hId, p_setor_id: sId }),
       ]);
 
       const k = kpiData?.[0];
@@ -69,7 +92,7 @@ export default function RelatorioFaturamento() {
       })));
       setLoading(false);
     })();
-  }, [inicio, fim]);
+  }, [inicio, fim, hospitalId, setorId]);
 
   const margem     = (kpi?.faturamento ?? 0) - (kpi?.repasse ?? 0);
   const pctRepasse = kpi?.faturamento ? (kpi.repasse / kpi.faturamento) * 100 : 0;
@@ -130,6 +153,35 @@ export default function RelatorioFaturamento() {
             onChange={e => setFim(e.target.value)}
             className="h-8 rounded-md border border-input bg-background px-3 text-sm shadow-sm" />
         </div>
+        <div className="flex items-center gap-2">
+          <Label className="text-xs">Cliente</Label>
+          <Select value={hospitalId || '__todos__'} onValueChange={v => {
+            const id = v === '__todos__' ? '' : v;
+            setHospitalId(id);
+            setHospitalNome(id ? (hospitals.find(h => h.id === id)?.nome ?? '') : '');
+            setSetorId(''); setSetorNome('');
+          }}>
+            <SelectTrigger className="h-8 w-44 text-xs"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__todos__">Todos os clientes</SelectItem>
+              {hospitals.map(h => <SelectItem key={h.id} value={h.id}>{h.nome}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex items-center gap-2">
+          <Label className="text-xs">Setor</Label>
+          <Select value={setorId || '__todos__'} onValueChange={v => {
+            const id = v === '__todos__' ? '' : v;
+            setSetorId(id);
+            setSetorNome(id ? (sectors.find(s => s.id === id)?.nome ?? '') : '');
+          }} disabled={setoresFiltrados.length === 0}>
+            <SelectTrigger className="h-8 w-44 text-xs"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__todos__">Todos os setores</SelectItem>
+              {setoresFiltrados.map(s => <SelectItem key={s.id} value={s.id}>{s.nome}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
         <Button size="sm" className="gap-1.5 ml-auto" onClick={() => window.print()}>
           <Printer className="h-4 w-4" /> Imprimir
         </Button>
@@ -144,6 +196,8 @@ export default function RelatorioFaturamento() {
           <div className="text-right">
             <h2 className="text-xl font-bold" style={{ color: NAVY }}>Análise de Faturamento</h2>
             <p className="text-sm text-gray-600 mt-1">Período: <strong>{periodo}</strong></p>
+            {hospitalNome && <p className="text-xs text-gray-500 mt-0.5">Cliente: <strong>{hospitalNome}</strong></p>}
+            {setorNome    && <p className="text-xs text-gray-500 mt-0.5">Setor: <strong>{setorNome}</strong></p>}
             <p className="text-xs text-gray-400 mt-0.5">Gerado em: {dataGer}</p>
           </div>
         </div>

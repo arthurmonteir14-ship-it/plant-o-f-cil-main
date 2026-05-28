@@ -233,7 +233,14 @@ export default function Dashboard() {
                   size="sm"
                   variant="outline"
                   className="gap-1.5 h-8 text-xs"
-                  onClick={() => window.open(`/relatorio-faturamento?inicio=${periodoInicio}&fim=${periodoFim}`, '_blank')}
+                  onClick={() => {
+                    const hospitalNome = filtroHospital === '__todos__' ? '' : (hospitals.find(h => h.id === filtroHospital)?.nome ?? '');
+                    const setorNome    = filtroSetor    === '__todos__' ? '' : (sectors.find(s => s.id === filtroSetor)?.nome ?? '');
+                    const params = new URLSearchParams({ inicio: periodoInicio, fim: periodoFim });
+                    if (filtroHospital !== '__todos__') { params.set('hospital', filtroHospital); params.set('hospitalNome', hospitalNome); }
+                    if (filtroSetor    !== '__todos__') { params.set('setor',    filtroSetor);    params.set('setorNome',    setorNome); }
+                    window.open(`/relatorio-faturamento?${params}`, '_blank');
+                  }}
                 >
                   <Printer className="h-3.5 w-3.5" /> Imprimir Relatório
                 </Button>
