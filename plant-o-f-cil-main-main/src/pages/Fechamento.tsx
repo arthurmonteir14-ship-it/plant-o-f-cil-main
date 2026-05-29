@@ -302,6 +302,9 @@ async function gerarPDFRPA(cooperado: Cooperado, lancamentos: LancRow[], periodo
   });
   y = (doc as any).lastAutoTable.finalY + 8;
 
+  // Se não há espaço para §4 + net block + §5 (≈130mm), abre nova página
+  if (y + 130 > H - 14) { doc.addPage(); y = 16; }
+
   // ── §4 Apuração ──
   drawSection('04', 'APURAÇÃO DE VALORES');
   const halfW = CW / 2; const lRowH = 10;
@@ -325,6 +328,9 @@ async function gerarPDFRPA(cooperado: Cooperado, lancamentos: LancRow[], periodo
   });
   y += Math.ceil(ledgerRows.length / 2) * lRowH + 6;
 
+  // Se não há espaço para net block + §5 (≈90mm), abre nova página
+  if (y + 90 > H - 14) { doc.addPage(); y = 16; }
+
   // ── Net block ──
   const netH = 20;
   doc.setFillColor(26, 47, 90); doc.rect(ML, y, CW, netH, 'F');
@@ -338,6 +344,9 @@ async function gerarPDFRPA(cooperado: Cooperado, lancamentos: LancRow[], periodo
   doc.setTextColor(255, 255, 255); doc.setFontSize(16); doc.setFont('helvetica', 'bold');
   doc.text(fmt(valorLiquido), W - MR, y + 14, { align: 'right' });
   y += netH + 10;
+
+  // Se não há espaço para §5 + assinaturas + faixa (≈60mm), abre nova página
+  if (y + 60 > H - 14) { doc.addPage(); y = 16; }
 
   // ── §5 Assinaturas ──
   drawSection('05', 'ASSINATURAS');
