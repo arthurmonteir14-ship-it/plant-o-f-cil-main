@@ -7,7 +7,8 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
-import { Plus, Search, Trash2, ChevronDown, ChevronUp, RefreshCw, Lock } from 'lucide-react';
+import { Plus, Search, Trash2, ChevronDown, ChevronUp, RefreshCw, Lock, CheckSquare } from 'lucide-react';
+import { Checkbox } from '@/components/ui/checkbox';
 import { formatCurrency, formatDate, profissaoLabel, tipoPlantaoLabel } from '@/lib/format';
 import { PeriodoPicker } from '@/components/PeriodoPicker';
 import { calcPeriodo, periodoInicial, PeriodoState } from '@/lib/periodo';
@@ -27,11 +28,19 @@ interface Hospital { id: string; nome: string; }
 interface Sector { id: string; nome: string; hospital_id: string; }
 interface CompetenciaFechada { id: string; setor_id: string; periodo_inicio: string; periodo_fim: string; }
 
-function LancRow({ r, fechado, canDelete, onDelete }: {
+function LancRow({ r, fechado, canDelete, onDelete, checked, onCheck }: {
   r: Row; fechado: boolean; canDelete: boolean; onDelete: () => void;
+  checked: boolean; onCheck: (v: boolean) => void;
 }) {
   return (
-    <tr className={fechado ? 'bg-red-50/30 hover:bg-red-50/50' : 'hover:bg-muted/20'}>
+    <tr className={`${fechado ? 'bg-red-50/30 hover:bg-red-50/50' : checked ? 'bg-blue-50/40' : 'hover:bg-muted/20'}`}>
+      {canDelete && (
+        <td className="p-3 w-10">
+          {!fechado && (
+            <Checkbox checked={checked} onCheckedChange={onCheck} aria-label="Selecionar" />
+          )}
+        </td>
+      )}
       <td className="p-3 tabular-nums">
         {fechado && <Lock className="inline h-3 w-3 mr-1 text-red-400" title="Competência fechada" />}
         {formatDate(r.data_plantao)}
@@ -45,17 +54,15 @@ function LancRow({ r, fechado, canDelete, onDelete }: {
       <td className="p-3 text-xs">{tipoPlantaoLabel[r.tipo_plantao]}</td>
       <td className="p-3 text-right tabular-nums font-medium">{formatCurrency(r.valor_cobrado_cliente)}</td>
       <td className="p-3 text-right tabular-nums text-accent">{formatCurrency(r.valor_repasse_cooperado)}</td>
-      {canDelete && (
-        <td className="p-3 text-right">
-          <Button size="sm" variant="ghost"
-            className={`h-7 w-7 p-0 ${fechado ? 'text-muted-foreground cursor-not-allowed' : 'text-destructive hover:text-destructive'}`}
-            disabled={fechado}
-            title={fechado ? 'Competência fechada' : 'Excluir'}
-            onClick={onDelete}>
-            {fechado ? <Lock className="h-3.5 w-3.5" /> : <Trash2 className="h-3.5 w-3.5" />}
-          </Button>
-        </td>
-      )}
+      <td className="p-3 text-right">
+        <Button size="sm" variant="ghost"
+          className={`h-7 w-7 p-0 ${fechado ? 'text-muted-foreground cursor-not-allowed' : 'text-destructive hover:text-destructive'}`}
+          disabled={fechado}
+          title={fechado ? 'Competência fechada' : 'Excluir'}
+          onClick={onDelete}>
+          {fechado ? <Lock className="h-3.5 w-3.5" /> : <Trash2 className="h-3.5 w-3.5" />}
+        </Button>
+      </td>
     </tr>
   );
 }
@@ -81,6 +88,9 @@ export default function Lancamentos() {
   const [deleteTarget, setDeleteTarget] = useState<Row | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [competenciasFechadas, setCompetenciasFechadas] = useState<CompetenciaFechada[]>([]);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [confirmBulk, setConfirmBulk] = useState(false);
+  const [deletingBulk, setDeletingBulk] = useState(false);
 
   const { inicio, fim } = useMemo(() => calcPeriodo(periodo), [periodo]);
 
@@ -182,6 +192,34 @@ export default function Lancamentos() {
     toast.success('Lançamento excluído');
     setDeleteTarget(null);
     fetchRows();
+  };
+
+  const confirmarBulkDelete = async () => {
+    if (selectedIds.size === 0) return;
+    setDeletingBulk(true);
+    const ids = [...selectedIds];
+    const { error } = await supabase.from('lancamentos_plantoes').delete().in('id', ids);
+    setDeletingBulk(false);
+    if (error) { toast.error('Erro ao excluir: ' + error.message); return; }
+    toast.success(`${ids.length} lançamento${ids.length !== 1 ? 's' : ''} excluído${ids.length !== 1 ? 's' : ''}`);
+    setSelectedIds(new Set());
+    setConfirmBulk(false);
+    fetchRows();
+  };
+
+  const toggleSelect = (id: string, v: boolean) =>
+    setSelectedIds(prev => { const s = new Set(prev); v ? s.add(id) : s.delete(id); return s; });
+
+  const selectableIds = (groupRows: Row[]) =>
+    groupRows.filter(r => !isSetorFechado(r.sectors?.id, r.data_plantao)).map(r => r.id);
+
+  const toggleGroupSelect = (groupRows: Row[], allSelected: boolean) => {
+    const ids = selectableIds(groupRows);
+    setSelectedIds(prev => {
+      const s = new Set(prev);
+      ids.forEach(id => allSelected ? s.delete(id) : s.add(id));
+      return s;
+    });
   };
 
   const totalCliente = filtered.reduce((s, r) => s + Number(r.valor_cobrado_cliente), 0);
@@ -286,6 +324,22 @@ export default function Lancamentos() {
         </div>
       )}
 
+      {/* Barra de ações em massa */}
+      {canDelete && selectedIds.size > 0 && (
+        <div className="sticky top-4 z-20 flex items-center justify-between gap-3 rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 shadow-lg">
+          <div className="flex items-center gap-2 text-sm font-medium text-destructive">
+            <CheckSquare className="h-4 w-4" />
+            {selectedIds.size} lançamento{selectedIds.size !== 1 ? 's' : ''} selecionado{selectedIds.size !== 1 ? 's' : ''}
+          </div>
+          <div className="flex gap-2">
+            <Button size="sm" variant="outline" onClick={() => setSelectedIds(new Set())}>Cancelar seleção</Button>
+            <Button size="sm" variant="destructive" className="gap-1.5" onClick={() => setConfirmBulk(true)}>
+              <Trash2 className="h-3.5 w-3.5" /> Excluir selecionados
+            </Button>
+          </div>
+        </div>
+      )}
+
       {/* Lista agrupada */}
       {loading ? (
         <div className="p-8 text-center text-sm text-muted-foreground">Carregando…</div>
@@ -330,6 +384,15 @@ export default function Lancamentos() {
                       <table className="w-full text-sm">
                         <thead className="text-xs uppercase tracking-wider text-muted-foreground bg-muted/30">
                           <tr>
+                            {canDelete && (
+                              <th className="p-3 w-10">
+                                <Checkbox
+                                  checked={selectableIds(group.rows).length > 0 && selectableIds(group.rows).every(id => selectedIds.has(id))}
+                                  onCheckedChange={v => toggleGroupSelect(group.rows, !!v && selectableIds(group.rows).every(id => selectedIds.has(id)))}
+                                  aria-label="Selecionar todos"
+                                />
+                              </th>
+                            )}
                             <th className="text-left p-3 font-medium">Data</th>
                             <th className="text-left p-3 font-medium">Hospital / Setor</th>
                             <th className="text-left p-3 font-medium">Horário</th>
@@ -337,7 +400,7 @@ export default function Lancamentos() {
                             <th className="text-left p-3 font-medium">Tipo</th>
                             <th className="text-right p-3 font-medium">Cliente</th>
                             <th className="text-right p-3 font-medium">Cooperado</th>
-                            {canDelete && <th className="text-right p-3 font-medium" />}
+                            <th className="p-3 w-10" />
                           </tr>
                         </thead>
                         <tbody className="divide-y">
@@ -348,17 +411,19 @@ export default function Lancamentos() {
                               fechado={isSetorFechado(r.sectors?.id, r.data_plantao)}
                               canDelete={canDelete}
                               onDelete={() => setDeleteTarget(r)}
+                              checked={selectedIds.has(r.id)}
+                              onCheck={v => toggleSelect(r.id, !!v)}
                             />
                           ))}
                         </tbody>
                         <tfoot className="bg-muted/20 font-medium">
                           <tr>
-                            <td colSpan={5} className="p-3 text-right text-xs uppercase tracking-wider text-muted-foreground">
+                            <td colSpan={canDelete ? 6 : 5} className="p-3 text-right text-xs uppercase tracking-wider text-muted-foreground">
                               Total
                             </td>
                             <td className="p-3 text-right tabular-nums">{formatCurrency(gCliente)}</td>
                             <td className="p-3 text-right tabular-nums text-accent">{formatCurrency(gCoop)}</td>
-                            {canDelete && <td />}
+                            <td />
                           </tr>
                         </tfoot>
                       </table>
@@ -370,6 +435,24 @@ export default function Lancamentos() {
           })}
         </div>
       )}
+
+      <AlertDialog open={confirmBulk} onOpenChange={o => !o && setConfirmBulk(false)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Excluir lançamentos selecionados</AlertDialogTitle>
+            <AlertDialogDescription>
+              Tem certeza que deseja excluir <strong>{selectedIds.size} lançamento{selectedIds.size !== 1 ? 's' : ''}</strong>? Esta ação não pode ser desfeita.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={confirmarBulkDelete} disabled={deletingBulk}>
+              {deletingBulk ? 'Excluindo…' : `Excluir ${selectedIds.size}`}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog open={!!deleteTarget} onOpenChange={o => !o && setDeleteTarget(null)}>
         <AlertDialogContent>
