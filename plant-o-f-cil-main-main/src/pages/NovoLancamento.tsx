@@ -162,6 +162,22 @@ export default function NovoLancamento() {
       return;
     }
 
+    // Verificar se alguma data está em competência fechada
+    const { data: cfData } = await supabase
+      .from('competencias_fechadas')
+      .select('periodo_inicio, periodo_fim')
+      .eq('setor_id', form.setor_id);
+    if (cfData && cfData.length > 0) {
+      const datasBloqueadas = datasStr.filter(d =>
+        cfData.some(c => d >= c.periodo_inicio && d <= c.periodo_fim)
+      );
+      if (datasBloqueadas.length > 0) {
+        setSubmitting(false);
+        toast.error(`Competência fechada! As datas ${datasBloqueadas.map(d => format(new Date(d + 'T12:00:00'), 'dd/MM/yyyy', { locale: ptBR })).join(', ')} pertencem a um período fechado.`);
+        return;
+      }
+    }
+
     const inserts = datasPlantao.map(data => ({
       cooperado_id: form.cooperado_id,
       hospital_id: form.hospital_id,

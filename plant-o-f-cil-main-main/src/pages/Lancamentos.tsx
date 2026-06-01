@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
-import { Plus, Search, Trash2, ChevronDown, ChevronUp, RefreshCw } from 'lucide-react';
+import { Plus, Search, Trash2, ChevronDown, ChevronUp, RefreshCw, Lock } from 'lucide-react';
 import { formatCurrency, formatDate, profissaoLabel, tipoPlantaoLabel } from '@/lib/format';
 import { PeriodoPicker } from '@/components/PeriodoPicker';
 import { calcPeriodo, periodoInicial, PeriodoState } from '@/lib/periodo';
@@ -25,6 +25,40 @@ interface Row {
 interface Cooperado { id: string; nome: string; }
 interface Hospital { id: string; nome: string; }
 interface Sector { id: string; nome: string; hospital_id: string; }
+interface CompetenciaFechada { id: string; setor_id: string; periodo_inicio: string; periodo_fim: string; }
+
+function LancRow({ r, fechado, canDelete, onDelete }: {
+  r: Row; fechado: boolean; canDelete: boolean; onDelete: () => void;
+}) {
+  return (
+    <tr className={fechado ? 'bg-red-50/30 hover:bg-red-50/50' : 'hover:bg-muted/20'}>
+      <td className="p-3 tabular-nums">
+        {fechado && <Lock className="inline h-3 w-3 mr-1 text-red-400" title="Competência fechada" />}
+        {formatDate(r.data_plantao)}
+      </td>
+      <td className="p-3">
+        <div>{r.hospitals?.nome ?? '—'}</div>
+        <div className="text-xs text-muted-foreground">{r.sectors?.nome ?? '—'}</div>
+      </td>
+      <td className="p-3 tabular-nums text-xs">{r.horario_inicio?.slice(0,5)}–{r.horario_fim?.slice(0,5)}</td>
+      <td className="p-3 text-right tabular-nums">{Number(r.total_horas).toFixed(2)}h</td>
+      <td className="p-3 text-xs">{tipoPlantaoLabel[r.tipo_plantao]}</td>
+      <td className="p-3 text-right tabular-nums font-medium">{formatCurrency(r.valor_cobrado_cliente)}</td>
+      <td className="p-3 text-right tabular-nums text-accent">{formatCurrency(r.valor_repasse_cooperado)}</td>
+      {canDelete && (
+        <td className="p-3 text-right">
+          <Button size="sm" variant="ghost"
+            className={`h-7 w-7 p-0 ${fechado ? 'text-muted-foreground cursor-not-allowed' : 'text-destructive hover:text-destructive'}`}
+            disabled={fechado}
+            title={fechado ? 'Competência fechada' : 'Excluir'}
+            onClick={onDelete}>
+            {fechado ? <Lock className="h-3.5 w-3.5" /> : <Trash2 className="h-3.5 w-3.5" />}
+          </Button>
+        </td>
+      )}
+    </tr>
+  );
+}
 
 export default function Lancamentos() {
   const { hasRole } = useAuth();
@@ -46,6 +80,7 @@ export default function Lancamentos() {
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [deleteTarget, setDeleteTarget] = useState<Row | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [competenciasFechadas, setCompetenciasFechadas] = useState<CompetenciaFechada[]>([]);
 
   const { inicio, fim } = useMemo(() => calcPeriodo(periodo), [periodo]);
 
@@ -77,7 +112,18 @@ export default function Lancamentos() {
     supabase.from('cooperados').select('id, nome').eq('ativo', true).order('nome').then(({ data }) => setCooperados(data ?? []));
     supabase.from('hospitals').select('id, nome').eq('ativo', true).order('nome').then(({ data }) => setHospitals(data ?? []));
     supabase.from('sectors').select('id, nome, hospital_id').eq('ativo', true).order('nome').then(({ data }) => setSectors(data ?? []));
+    supabase.from('competencias_fechadas').select('id, setor_id, periodo_inicio, periodo_fim')
+      .then(({ data }) => setCompetenciasFechadas((data ?? []) as CompetenciaFechada[]));
   }, []);
+
+  const isSetorFechado = (setorId: string | undefined, dataPlantao: string) => {
+    if (!setorId) return false;
+    return competenciasFechadas.some(c =>
+      c.setor_id === setorId &&
+      dataPlantao >= c.periodo_inicio &&
+      dataPlantao <= c.periodo_fim
+    );
+  };
 
   const setoresFiltrados = useMemo(
     () => filterHospital === 'all' ? sectors : sectors.filter(s => s.hospital_id === filterHospital),
@@ -296,26 +342,13 @@ export default function Lancamentos() {
                         </thead>
                         <tbody className="divide-y">
                           {group.rows.map(r => (
-                            <tr key={r.id} className="hover:bg-muted/20">
-                              <td className="p-3 tabular-nums">{formatDate(r.data_plantao)}</td>
-                              <td className="p-3">
-                                <div>{r.hospitals?.nome ?? '—'}</div>
-                                <div className="text-xs text-muted-foreground">{r.sectors?.nome ?? '—'}</div>
-                              </td>
-                              <td className="p-3 tabular-nums text-xs">{r.horario_inicio?.slice(0,5)}–{r.horario_fim?.slice(0,5)}</td>
-                              <td className="p-3 text-right tabular-nums">{Number(r.total_horas).toFixed(2)}h</td>
-                              <td className="p-3 text-xs">{tipoPlantaoLabel[r.tipo_plantao]}</td>
-                              <td className="p-3 text-right tabular-nums font-medium">{formatCurrency(r.valor_cobrado_cliente)}</td>
-                              <td className="p-3 text-right tabular-nums text-accent">{formatCurrency(r.valor_repasse_cooperado)}</td>
-                              {canDelete && (
-                                <td className="p-3 text-right">
-                                  <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-destructive hover:text-destructive"
-                                    onClick={() => setDeleteTarget(r)}>
-                                    <Trash2 className="h-3.5 w-3.5" />
-                                  </Button>
-                                </td>
-                              )}
-                            </tr>
+                            <LancRow
+                              key={r.id}
+                              r={r}
+                              fechado={isSetorFechado(r.sectors?.id, r.data_plantao)}
+                              canDelete={canDelete}
+                              onDelete={() => setDeleteTarget(r)}
+                            />
                           ))}
                         </tbody>
                         <tfoot className="bg-muted/20 font-medium">

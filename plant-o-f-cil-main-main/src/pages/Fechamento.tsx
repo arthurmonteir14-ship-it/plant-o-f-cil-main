@@ -8,7 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
 import {
-  Download, FileText, Eye, Send, CheckCircle, AlertCircle, Clock, RefreshCw, SendHorizonal, X, Receipt,
+  Download, FileText, Eye, Send, CheckCircle, AlertCircle, Clock, RefreshCw, SendHorizonal, X, Receipt, Lock, Unlock,
 } from 'lucide-react';
 import { formatCurrency, profissaoLabel, tipoPlantaoLabel } from '@/lib/format';
 import { exportarRelatorioExcel } from '@/lib/exportExcel';
@@ -42,6 +42,11 @@ interface Cooperado {
 }
 
 type StatusRPA = 'pendente' | 'enviado' | 'erro';
+
+interface CompetenciaFechada {
+  id: string; hospital_id: string; setor_id: string;
+  periodo_inicio: string; periodo_fim: string; fechado_em: string;
+}
 
 // ─── Constantes RPA ───────────────────────────────────────────────────────────
 
@@ -1295,6 +1300,115 @@ function AbaRepasse({ rows, hospitals, sectors, cooperados, periodoLabel }: {
   );
 }
 
+// ─── Aba Fechamento por Setor ─────────────────────────────────────────────────
+
+function AbaFechamentoSetores({ rows, competenciasFechadas, periodoInicio, periodoFim, onFechar, onReabrir }: {
+  rows: LancRow[];
+  competenciasFechadas: CompetenciaFechada[];
+  periodoInicio: string; periodoFim: string;
+  onFechar: (hospitalId: string, setorId: string) => Promise<void>;
+  onReabrir: (id: string) => Promise<void>;
+}) {
+  const grupos = useMemo(() => {
+    const map = new Map<string, { hId: string; hNome: string; setores: Map<string, { sId: string; sNome: string; rows: LancRow[] }> }>();
+    rows.forEach(r => {
+      const hId = r.hospitals?.id; if (!hId) return;
+      if (!map.has(hId)) map.set(hId, { hId, hNome: r.hospitals?.nome ?? '—', setores: new Map() });
+      const h = map.get(hId)!;
+      const sId = r.sectors?.id; if (!sId) return;
+      if (!h.setores.has(sId)) h.setores.set(sId, { sId, sNome: r.sectors?.nome ?? '—', rows: [] });
+      h.setores.get(sId)!.rows.push(r);
+    });
+    return [...map.values()].sort((a, b) => a.hNome.localeCompare(b.hNome));
+  }, [rows]);
+
+  const getCF = (setorId: string) =>
+    competenciasFechadas.find(c => c.setor_id === setorId && c.periodo_inicio === periodoInicio && c.periodo_fim === periodoFim);
+
+  if (rows.length === 0) return (
+    <Card><CardContent className="p-10 text-center text-sm text-muted-foreground">Nenhum lançamento no período selecionado.</CardContent></Card>
+  );
+
+  return (
+    <div className="space-y-4">
+      <p className="text-xs text-muted-foreground">
+        Feche a competência por setor para bloquear novos lançamentos, edições e exclusões neste período e setor.
+      </p>
+      {grupos.map(({ hId, hNome, setores }) => (
+        <Card key={hId} className="overflow-hidden">
+          <div className="px-4 py-3 border-b bg-muted/30 flex items-center justify-between">
+            <div>
+              <p className="font-semibold text-sm">{hNome}</p>
+              <p className="text-xs text-muted-foreground">
+                {[...setores.values()].reduce((s, st) => s + st.rows.length, 0)} lançamentos
+              </p>
+            </div>
+            <div className="flex gap-1 text-xs">
+              <Badge variant="secondary" className="bg-green-100 text-green-700">
+                🟢 {[...setores.values()].filter(st => !getCF(st.sId)).length} abertos
+              </Badge>
+              {[...setores.values()].some(st => !!getCF(st.sId)) && (
+                <Badge variant="destructive">
+                  🔒 {[...setores.values()].filter(st => !!getCF(st.sId)).length} fechados
+                </Badge>
+              )}
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="text-xs uppercase tracking-wider text-muted-foreground bg-muted/10">
+                <tr>
+                  <th className="text-left px-4 py-2.5 font-medium">Setor</th>
+                  <th className="text-center px-4 py-2.5 font-medium">Plantões</th>
+                  <th className="text-right px-4 py-2.5 font-medium">Faturado</th>
+                  <th className="text-right px-4 py-2.5 font-medium">Repasse</th>
+                  <th className="text-center px-4 py-2.5 font-medium">Status</th>
+                  <th className="text-right px-4 py-2.5 font-medium">Ação</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {[...setores.values()].sort((a, b) => a.sNome.localeCompare(b.sNome)).map(({ sId, sNome, rows: sr }) => {
+                  const cf = getCF(sId);
+                  const fechado = !!cf;
+                  const fat = sr.reduce((s, r) => s + Number(r.valor_cobrado_cliente), 0);
+                  const rep = sr.reduce((s, r) => s + Number(r.valor_repasse_cooperado), 0);
+                  return (
+                    <tr key={sId} className={fechado ? 'bg-red-50/40' : 'hover:bg-muted/20'}>
+                      <td className="px-4 py-3 font-medium">
+                        {fechado && <Lock className="inline h-3.5 w-3.5 mr-1.5 text-red-500" />}
+                        {sNome}
+                      </td>
+                      <td className="px-4 py-3 text-center tabular-nums">{sr.length}</td>
+                      <td className="px-4 py-3 text-right tabular-nums">{formatCurrency(fat)}</td>
+                      <td className="px-4 py-3 text-right tabular-nums">{formatCurrency(rep)}</td>
+                      <td className="px-4 py-3 text-center">
+                        {fechado
+                          ? <Badge variant="destructive" className="gap-1 text-xs"><Lock className="h-3 w-3" /> Fechado</Badge>
+                          : <Badge variant="secondary" className="gap-1 text-xs bg-green-100 text-green-700 border-0">🟢 Aberto</Badge>}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        {fechado
+                          ? <Button size="sm" variant="outline" className="h-7 text-xs gap-1 text-green-700 border-green-300 hover:bg-green-50"
+                              onClick={() => onReabrir(cf.id)}>
+                              <Unlock className="h-3 w-3" /> Reabrir
+                            </Button>
+                          : <Button size="sm" variant="outline" className="h-7 text-xs gap-1 text-red-600 border-red-300 hover:bg-red-50"
+                              onClick={() => onFechar(hId, sId)}>
+                              <Lock className="h-3 w-3" /> Fechar
+                            </Button>}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
 // ─── Página principal ─────────────────────────────────────────────────────────
 
 export default function Fechamento() {
@@ -1307,6 +1421,29 @@ export default function Fechamento() {
 
   const periodoCalc = useMemo(() => calcPeriodo(periodo), [periodo]);
   const fetchIdRef = useRef(0);
+  const [competenciasFechadas, setCompetenciasFechadas] = useState<CompetenciaFechada[]>([]);
+
+  const loadCompetencias = async () => {
+    const { data } = await supabase.from('competencias_fechadas').select('*');
+    setCompetenciasFechadas((data ?? []) as CompetenciaFechada[]);
+  };
+
+  const fecharCompetencia = async (hospitalId: string, setorId: string) => {
+    const { error } = await supabase.from('competencias_fechadas').insert({
+      hospital_id: hospitalId, setor_id: setorId,
+      periodo_inicio: periodoCalc.inicio, periodo_fim: periodoCalc.fim,
+    } as never);
+    if (error) { toast.error('Erro ao fechar competência: ' + error.message); return; }
+    toast.success('Competência fechada com sucesso');
+    loadCompetencias();
+  };
+
+  const reabrirCompetencia = async (id: string) => {
+    const { error } = await supabase.from('competencias_fechadas').delete().eq('id', id);
+    if (error) { toast.error('Erro ao reabrir competência: ' + error.message); return; }
+    toast.success('Competência reaberta');
+    loadCompetencias();
+  };
 
   const load = async (inicio: string, fim: string) => {
     const myId = ++fetchIdRef.current;
@@ -1343,6 +1480,7 @@ export default function Fechamento() {
     supabase.from('sectors').select('id, nome, hospital_id').eq('ativo', true).order('nome').then(({ data }) => setSectors(data ?? []));
     supabase.from('cooperados').select('id, nome, cpf, email, profissao, rg, pis_inss, pix').order('nome')
       .then(({ data }) => setCooperados((data ?? []) as Cooperado[]));
+    loadCompetencias();
   }, []);
 
   return (
@@ -1362,6 +1500,14 @@ export default function Fechamento() {
             <TabsTrigger value="cobranca">Cobrança ao Cliente</TabsTrigger>
             <TabsTrigger value="repasse">Repasse ao Cooperado</TabsTrigger>
             <TabsTrigger value="rpa">RPA dos Cooperados</TabsTrigger>
+            <TabsTrigger value="competencias" className="gap-1.5">
+              <Lock className="h-3.5 w-3.5" /> Competências
+              {competenciasFechadas.filter(c => c.periodo_inicio === periodoCalc.inicio && c.periodo_fim === periodoCalc.fim).length > 0 && (
+                <Badge variant="destructive" className="ml-1 h-4 text-[10px] px-1">
+                  {competenciasFechadas.filter(c => c.periodo_inicio === periodoCalc.inicio && c.periodo_fim === periodoCalc.fim).length}
+                </Badge>
+              )}
+            </TabsTrigger>
           </TabsList>
           <TabsContent value="cobranca" className="mt-4">
             <AbaCobranca rows={rows} hospitals={hospitals} sectors={sectors} cooperados={cooperados} periodoLabel={periodoCalc.label} />
@@ -1371,6 +1517,16 @@ export default function Fechamento() {
           </TabsContent>
           <TabsContent value="rpa" className="mt-4">
             <AbaRPA rows={rows} hospitals={hospitals} sectors={sectors} cooperados={cooperados} periodoLabel={periodoCalc.label} />
+          </TabsContent>
+          <TabsContent value="competencias" className="mt-4">
+            <AbaFechamentoSetores
+              rows={rows}
+              competenciasFechadas={competenciasFechadas}
+              periodoInicio={periodoCalc.inicio}
+              periodoFim={periodoCalc.fim}
+              onFechar={fecharCompetencia}
+              onReabrir={reabrirCompetencia}
+            />
           </TabsContent>
         </Tabs>
       )}
