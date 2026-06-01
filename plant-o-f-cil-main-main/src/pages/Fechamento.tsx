@@ -1117,10 +1117,17 @@ function AbaRPA({ rows, hospitals, sectors, cooperados, periodoLabel }: { rows: 
 
 // ─── Tabela por Grupo ─────────────────────────────────────────────────────────
 
-function TabelaGrupos({ grupos, valorKey, grupoLabel, subGrupoLabel }: {
+function TabelaGrupos({ grupos, valorKey, grupoLabel, subGrupoLabel, competenciasFechadas }: {
   grupos: [string, LancRow[]][]; valorKey: 'valor_cobrado_cliente' | 'valor_repasse_cooperado';
   grupoLabel: string; subGrupoLabel: (r: LancRow) => string;
+  competenciasFechadas?: CompetenciaFechada[];
 }) {
+  const isFechado = (r: LancRow) =>
+    !!competenciasFechadas?.some(c =>
+      c.setor_id === r.sectors?.id &&
+      r.data_plantao >= c.periodo_inicio &&
+      r.data_plantao <= c.periodo_fim
+    );
   const totalGeral = grupos.reduce((s, [, rs]) => s + rs.reduce((ss, r) => ss + Number(r[valorKey]), 0), 0);
   const horasGeral = grupos.reduce((s, [, rs]) => s + rs.reduce((ss, r) => ss + Number(r.total_horas), 0), 0);
   const qtdGeral = grupos.reduce((s, [, rs]) => s + rs.length, 0);
@@ -1147,15 +1154,21 @@ function TabelaGrupos({ grupos, valorKey, grupoLabel, subGrupoLabel }: {
                 </tr>
               </thead>
               <tbody>
-                {lancs.map((r, i) => (
-                  <tr key={r.id} className={i % 2 === 0 ? 'bg-white' : 'bg-muted/10'}>
-                    <td className="px-4 py-3 tabular-nums">{fmtDate(r.data_plantao)}</td>
-                    <td className="px-4 py-3">{subGrupoLabel(r)}</td>
-                    <td className="px-4 py-3 text-muted-foreground">{r.sectors?.nome ?? '—'}</td>
-                    <td className="px-4 py-3 text-right tabular-nums">{Number(r.total_horas).toFixed(2)}h</td>
-                    <td className="px-4 py-3 text-right tabular-nums font-medium">{formatCurrency(Number(r[valorKey]))}</td>
-                  </tr>
-                ))}
+                {lancs.map((r, i) => {
+                  const fechado = isFechado(r);
+                  return (
+                    <tr key={r.id} className={fechado ? 'bg-red-50/40' : i % 2 === 0 ? 'bg-white' : 'bg-muted/10'}>
+                      <td className="px-4 py-3 tabular-nums">
+                        {fechado && <Lock className="inline h-3 w-3 mr-1.5 text-red-500" title="Competência fechada" />}
+                        {fmtDate(r.data_plantao)}
+                      </td>
+                      <td className="px-4 py-3">{subGrupoLabel(r)}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{r.sectors?.nome ?? '—'}</td>
+                      <td className="px-4 py-3 text-right tabular-nums">{Number(r.total_horas).toFixed(2)}h</td>
+                      <td className="px-4 py-3 text-right tabular-nums font-medium">{formatCurrency(Number(r[valorKey]))}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
               <tfoot>
                 <tr className="border-t border-primary/20 bg-primary/5">
@@ -1178,8 +1191,9 @@ function TabelaGrupos({ grupos, valorKey, grupoLabel, subGrupoLabel }: {
 
 // ─── Aba Cobrança ─────────────────────────────────────────────────────────────
 
-function AbaCobranca({ rows, hospitals, sectors, cooperados, periodoLabel }: {
+function AbaCobranca({ rows, hospitals, sectors, cooperados, periodoLabel, competenciasFechadas }: {
   rows: LancRow[]; hospitals: Hospital[]; sectors: Sector[]; cooperados: Cooperado[]; periodoLabel: string;
+  competenciasFechadas: CompetenciaFechada[];
 }) {
   const [filterHospital, setFilterHospital] = useState('all');
   const [filterCooperado, setFilterCooperado] = useState('all');
@@ -1228,15 +1242,16 @@ function AbaCobranca({ rows, hospitals, sectors, cooperados, periodoLabel }: {
         <Button variant="outline" size="sm" className="gap-2" onClick={() => exportCSV(filtered, 'cobranca', periodoLabel)}><Download className="h-4 w-4" /> CSV</Button>
       </div>}
       {filtered.length === 0 ? <Card><CardContent className="p-10 text-center text-sm text-muted-foreground">Nenhum lançamento para os filtros selecionados.</CardContent></Card>
-        : <TabelaGrupos grupos={grupos} valorKey="valor_cobrado_cliente" grupoLabel={filterHospital !== 'all' ? 'Cooperado' : 'Hospital'} subGrupoLabel={r => filterHospital !== 'all' ? (r.cooperados?.nome ?? '—') : (r.hospitals?.nome ?? '—')} />}
+        : <TabelaGrupos grupos={grupos} valorKey="valor_cobrado_cliente" grupoLabel={filterHospital !== 'all' ? 'Cooperado' : 'Hospital'} subGrupoLabel={r => filterHospital !== 'all' ? (r.cooperados?.nome ?? '—') : (r.hospitals?.nome ?? '—')} competenciasFechadas={competenciasFechadas} />}
     </div>
   );
 }
 
 // ─── Aba Repasse ──────────────────────────────────────────────────────────────
 
-function AbaRepasse({ rows, hospitals, sectors, cooperados, periodoLabel }: {
+function AbaRepasse({ rows, hospitals, sectors, cooperados, periodoLabel, competenciasFechadas }: {
   rows: LancRow[]; hospitals: Hospital[]; sectors: Sector[]; cooperados: Cooperado[]; periodoLabel: string;
+  competenciasFechadas: CompetenciaFechada[];
 }) {
   const [filterHospital, setFilterHospital] = useState('all');
   const [filterCooperado, setFilterCooperado] = useState('all');
@@ -1295,7 +1310,7 @@ function AbaRepasse({ rows, hospitals, sectors, cooperados, periodoLabel }: {
         <Button variant="outline" size="sm" className="gap-2" onClick={() => exportCSV(filtered, 'repasse', periodoLabel)}><Download className="h-4 w-4" /> CSV</Button>
       </div>}
       {filtered.length === 0 ? <Card><CardContent className="p-10 text-center text-sm text-muted-foreground">Nenhum lançamento para os filtros selecionados.</CardContent></Card>
-        : <TabelaGrupos grupos={grupos} valorKey="valor_repasse_cooperado" grupoLabel={filterCooperado !== 'all' ? 'Hospital' : 'Cooperado'} subGrupoLabel={r => filterCooperado !== 'all' ? (r.hospitals?.nome ?? '—') : (r.cooperados?.nome ?? '—')} />}
+        : <TabelaGrupos grupos={grupos} valorKey="valor_repasse_cooperado" grupoLabel={filterCooperado !== 'all' ? 'Hospital' : 'Cooperado'} subGrupoLabel={r => filterCooperado !== 'all' ? (r.hospitals?.nome ?? '—') : (r.cooperados?.nome ?? '—')} competenciasFechadas={competenciasFechadas} />}
     </div>
   );
 }
@@ -1510,10 +1525,10 @@ export default function Fechamento() {
             </TabsTrigger>
           </TabsList>
           <TabsContent value="cobranca" className="mt-4">
-            <AbaCobranca rows={rows} hospitals={hospitals} sectors={sectors} cooperados={cooperados} periodoLabel={periodoCalc.label} />
+            <AbaCobranca rows={rows} hospitals={hospitals} sectors={sectors} cooperados={cooperados} periodoLabel={periodoCalc.label} competenciasFechadas={competenciasFechadas} />
           </TabsContent>
           <TabsContent value="repasse" className="mt-4">
-            <AbaRepasse rows={rows} hospitals={hospitals} sectors={sectors} cooperados={cooperados} periodoLabel={periodoCalc.label} />
+            <AbaRepasse rows={rows} hospitals={hospitals} sectors={sectors} cooperados={cooperados} periodoLabel={periodoCalc.label} competenciasFechadas={competenciasFechadas} />
           </TabsContent>
           <TabsContent value="rpa" className="mt-4">
             <AbaRPA rows={rows} hospitals={hospitals} sectors={sectors} cooperados={cooperados} periodoLabel={periodoCalc.label} />

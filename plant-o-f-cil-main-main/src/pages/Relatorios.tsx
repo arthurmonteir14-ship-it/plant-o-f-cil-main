@@ -4,7 +4,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Download, Eye, EyeOff, FileBarChart2, FileText, TrendingUp, Users } from 'lucide-react';
+import { Download, Eye, EyeOff, FileBarChart2, FileText, TrendingUp, Users, Lock } from 'lucide-react';
 import { toast } from 'sonner';
 import { formatCurrency, profissaoLabel, tipoPlantaoLabel } from '@/lib/format';
 import { PeriodoPicker } from '@/components/PeriodoPicker';
@@ -371,6 +371,21 @@ export default function Relatorios() {
 
   const periodoCalc = useMemo(() => calcPeriodo(periodo), [periodo]);
   const fetchIdRef = useRef(0);
+  const [competenciasFechadas, setCompetenciasFechadas] = useState<{setor_id: string; periodo_inicio: string; periodo_fim: string}[]>([]);
+
+  useEffect(() => {
+    supabase.from('competencias_fechadas').select('setor_id, periodo_inicio, periodo_fim')
+      .then(({ data }) => setCompetenciasFechadas(data ?? []));
+  }, []);
+
+  const isSetorFechado = (setorId: string | undefined) => {
+    if (!setorId) return false;
+    return competenciasFechadas.some(c =>
+      c.setor_id === setorId &&
+      periodoCalc.inicio >= c.periodo_inicio &&
+      periodoCalc.fim <= c.periodo_fim
+    );
+  };
 
   const fetchRows = useCallback(async () => {
     const myId = ++fetchIdRef.current;
@@ -632,11 +647,15 @@ export default function Relatorios() {
         /* ── Conteúdo consolidado por setor → cooperado ── */
         <div className="space-y-4">
           {setorCards.map(setor => (
-            <Card key={setor.key} className="overflow-hidden">
+            <Card key={setor.key} className={`overflow-hidden ${isSetorFechado(setor.key) ? 'border-red-300' : ''}`}>
               {/* cabeçalho do setor */}
-              <div className="flex items-center justify-between px-4 py-3 bg-muted/40 border-b">
+              <div className={`flex items-center justify-between px-4 py-3 border-b ${isSetorFechado(setor.key) ? 'bg-red-50/50' : 'bg-muted/40'}`}>
                 <div>
-                  <p className="font-semibold text-[15px]">{setor.nome}</p>
+                  <p className="font-semibold text-[15px]">
+                    {isSetorFechado(setor.key) && <Lock className="inline h-3.5 w-3.5 mr-1.5 text-red-500 mb-0.5" />}
+                    {setor.nome}
+                    {isSetorFechado(setor.key) && <span className="ml-2 text-xs font-normal text-red-500">Competência fechada</span>}
+                  </p>
                   <p className="text-xs text-muted-foreground mt-0.5">
                     {setor.subtotalPlantoes} plantão{setor.subtotalPlantoes !== 1 ? 'ões' : ''}
                     {' · '}{setor.subtotalDiurnos} diurno{setor.subtotalDiurnos !== 1 ? 's' : ''}
