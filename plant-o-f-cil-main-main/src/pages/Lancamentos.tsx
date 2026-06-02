@@ -7,9 +7,10 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
-import { Plus, Search, Trash2, ChevronDown, ChevronUp, RefreshCw, Lock, CheckSquare } from 'lucide-react';
+import { Plus, Search, Trash2, ChevronDown, ChevronUp, RefreshCw, Lock, CheckSquare, Pencil } from 'lucide-react';
 import { Checkbox } from '@/components/ui/checkbox';
-import { formatCurrency, formatDate, profissaoLabel, tipoPlantaoLabel } from '@/lib/format';
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { formatCurrency, formatDate, profissaoLabel, tipoPlantaoLabel, calcularHoras, tipoPlantaoOptions } from '@/lib/format';
 import { PeriodoPicker } from '@/components/PeriodoPicker';
 import { calcPeriodo, periodoInicial, PeriodoState } from '@/lib/periodo';
 import { toast } from 'sonner';
@@ -28,8 +29,8 @@ interface Hospital { id: string; nome: string; }
 interface Sector { id: string; nome: string; hospital_id: string; }
 interface CompetenciaFechada { id: string; setor_id: string; periodo_inicio: string; periodo_fim: string; }
 
-function LancRow({ r, fechado, canDelete, onDelete, checked, onCheck }: {
-  r: Row; fechado: boolean; canDelete: boolean; onDelete: () => void;
+function LancRow({ r, fechado, canDelete, onDelete, onEdit, checked, onCheck }: {
+  r: Row; fechado: boolean; canDelete: boolean; onDelete: () => void; onEdit: () => void;
   checked: boolean; onCheck: (v: boolean) => void;
 }) {
   return (
@@ -55,13 +56,17 @@ function LancRow({ r, fechado, canDelete, onDelete, checked, onCheck }: {
       <td className="p-3 text-right tabular-nums font-medium">{formatCurrency(r.valor_cobrado_cliente)}</td>
       <td className="p-3 text-right tabular-nums text-accent">{formatCurrency(r.valor_repasse_cooperado)}</td>
       <td className="p-3 text-right">
-        <Button size="sm" variant="ghost"
-          className={`h-7 w-7 p-0 ${fechado ? 'text-muted-foreground cursor-not-allowed' : 'text-destructive hover:text-destructive'}`}
-          disabled={fechado}
-          title={fechado ? 'Competência fechada' : 'Excluir'}
-          onClick={onDelete}>
-          {fechado ? <Lock className="h-3.5 w-3.5" /> : <Trash2 className="h-3.5 w-3.5" />}
-        </Button>
+        <div className="flex items-center justify-end gap-1">
+          <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-muted-foreground hover:text-primary"
+            disabled={fechado} title={fechado ? 'Competência fechada' : 'Editar'} onClick={onEdit}>
+            <Pencil className="h-3.5 w-3.5" />
+          </Button>
+          <Button size="sm" variant="ghost"
+            className={`h-7 w-7 p-0 ${fechado ? 'text-muted-foreground cursor-not-allowed' : 'text-destructive hover:text-destructive'}`}
+            disabled={fechado} title={fechado ? 'Competência fechada' : 'Excluir'} onClick={onDelete}>
+            {fechado ? <Lock className="h-3.5 w-3.5" /> : <Trash2 className="h-3.5 w-3.5" />}
+          </Button>
+        </div>
       </td>
     </tr>
   );
@@ -91,6 +96,9 @@ export default function Lancamentos() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [confirmBulk, setConfirmBulk] = useState(false);
   const [deletingBulk, setDeletingBulk] = useState(false);
+  const [editTarget, setEditTarget] = useState<Row | null>(null);
+  const [editForm, setEditForm] = useState({ hospital_id: '', setor_id: '', data_plantao: '', horario_inicio: '', horario_fim: '', tipo_plantao: '' });
+  const [saving, setSaving] = useState(false);
 
   const { inicio, fim } = useMemo(() => calcPeriodo(periodo), [periodo]);
 
@@ -206,6 +214,72 @@ export default function Lancamentos() {
     setConfirmBulk(false);
     fetchRows();
   };
+
+  const abrirEdicao = (r: Row) => {
+    setEditTarget(r);
+    setEditForm({
+      hospital_id: r.hospitals?.id ?? '',
+      setor_id: r.sectors?.id ?? '',
+      data_plantao: r.data_plantao,
+      horario_inicio: r.horario_inicio?.slice(0, 5) ?? '',
+      horario_fim: r.horario_fim?.slice(0, 5) ?? '',
+      tipo_plantao: r.tipo_plantao,
+    });
+  };
+
+  const salvarEdicao = async () => {
+    if (!editTarget) return;
+    const { hospital_id, setor_id, data_plantao, horario_inicio, horario_fim, tipo_plantao } = editForm;
+    if (!hospital_id || !setor_id || !data_plantao || !horario_inicio || !horario_fim || !tipo_plantao)
+      return toast.error('Preencha todos os campos');
+    const total_horas = calcularHoras(horario_inicio, horario_fim);
+    if (total_horas <= 0) return toast.error('Horário inválido');
+
+    setSaving(true);
+    // Buscar valores da tabela se hospital ou tipo mudou
+    let valor_cobrado_cliente = Number(editTarget.valor_cobrado_cliente);
+    let valor_repasse_cooperado = Number(editTarget.valor_repasse_cooperado);
+    let percentual_repasse = 0;
+
+    if (hospital_id !== editTarget.hospitals?.id || tipo_plantao !== editTarget.tipo_plantao) {
+      const { data: tv } = await supabase
+        .from('tabela_valores')
+        .select('valor_hora_cliente, percentual_repasse')
+        .eq('hospital_id', hospital_id)
+        .eq('profissao', editTarget.profissao)
+        .eq('tipo_plantao', tipo_plantao)
+        .eq('ativo', true)
+        .limit(1)
+        .maybeSingle();
+      if (tv) {
+        valor_cobrado_cliente = Number(tv.valor_hora_cliente) * total_horas;
+        percentual_repasse = Number(tv.percentual_repasse);
+        valor_repasse_cooperado = valor_cobrado_cliente * (percentual_repasse / 100);
+      }
+    } else {
+      valor_cobrado_cliente = (valor_cobrado_cliente / Number(editTarget.total_horas)) * total_horas;
+      valor_repasse_cooperado = (valor_repasse_cooperado / Number(editTarget.total_horas)) * total_horas;
+      percentual_repasse = Number(editTarget.valor_repasse_cooperado) / Number(editTarget.valor_cobrado_cliente) * 100;
+    }
+
+    const { error } = await supabase.from('lancamentos_plantoes').update({
+      hospital_id, setor_id, data_plantao, horario_inicio, horario_fim,
+      tipo_plantao, total_horas,
+      valor_cobrado_cliente: Math.round(valor_cobrado_cliente * 100) / 100,
+      valor_repasse_cooperado: Math.round(valor_repasse_cooperado * 100) / 100,
+      percentual_repasse: Math.round(percentual_repasse * 100) / 100,
+    } as never).eq('id', editTarget.id);
+
+    setSaving(false);
+    if (error) { toast.error('Erro ao salvar: ' + error.message); return; }
+    toast.success('Lançamento atualizado');
+    setEditTarget(null);
+    fetchRows();
+  };
+
+  const editSetores = useMemo(() =>
+    editForm.hospital_id ? sectors.filter(s => s.hospital_id === editForm.hospital_id) : sectors,
+  [sectors, editForm.hospital_id]);
 
   const toggleSelect = (id: string, v: boolean) =>
     setSelectedIds(prev => { const s = new Set(prev); v ? s.add(id) : s.delete(id); return s; });
@@ -411,6 +485,7 @@ export default function Lancamentos() {
                               fechado={isSetorFechado(r.sectors?.id, r.data_plantao)}
                               canDelete={canDelete}
                               onDelete={() => setDeleteTarget(r)}
+                              onEdit={() => abrirEdicao(r)}
                               checked={selectedIds.has(r.id)}
                               onCheck={v => toggleSelect(r.id, !!v)}
                             />
@@ -435,6 +510,72 @@ export default function Lancamentos() {
           })}
         </div>
       )}
+
+      {/* Modal de edição */}
+      <Dialog open={!!editTarget} onOpenChange={o => !o && setEditTarget(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Editar lançamento</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <div>
+              <Label className="text-xs">Data do plantão</Label>
+              <Input type="date" value={editForm.data_plantao}
+                onChange={e => setEditForm(p => ({ ...p, data_plantao: e.target.value }))} />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">Horário início</Label>
+                <Input type="time" value={editForm.horario_inicio}
+                  onChange={e => setEditForm(p => ({ ...p, horario_inicio: e.target.value }))} />
+              </div>
+              <div>
+                <Label className="text-xs">Horário fim</Label>
+                <Input type="time" value={editForm.horario_fim}
+                  onChange={e => setEditForm(p => ({ ...p, horario_fim: e.target.value }))} />
+              </div>
+            </div>
+            <div>
+              <Label className="text-xs">Tipo de plantão</Label>
+              <Select value={editForm.tipo_plantao} onValueChange={v => setEditForm(p => ({ ...p, tipo_plantao: v }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {tipoPlantaoOptions.map(o => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs">Cliente</Label>
+              <Select value={editForm.hospital_id} onValueChange={v => setEditForm(p => ({ ...p, hospital_id: v, setor_id: '' }))}>
+                <SelectTrigger><SelectValue placeholder="Selecione o cliente" /></SelectTrigger>
+                <SelectContent>
+                  {hospitals.map(h => <SelectItem key={h.id} value={h.id}>{h.nome}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs">Setor</Label>
+              <Select value={editForm.setor_id} onValueChange={v => setEditForm(p => ({ ...p, setor_id: v }))} disabled={editSetores.length === 0}>
+                <SelectTrigger><SelectValue placeholder="Selecione o setor" /></SelectTrigger>
+                <SelectContent>
+                  {editSetores.map(s => <SelectItem key={s.id} value={s.id}>{s.nome}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            {editForm.horario_inicio && editForm.horario_fim && (
+              <p className="text-xs text-muted-foreground">
+                Total calculado: <strong>{calcularHoras(editForm.horario_inicio, editForm.horario_fim).toFixed(2)}h</strong>
+              </p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditTarget(null)}>Cancelar</Button>
+            <Button onClick={salvarEdicao} disabled={saving}>
+              {saving ? 'Salvando…' : 'Salvar alterações'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <AlertDialog open={confirmBulk} onOpenChange={o => !o && setConfirmBulk(false)}>
         <AlertDialogContent>
