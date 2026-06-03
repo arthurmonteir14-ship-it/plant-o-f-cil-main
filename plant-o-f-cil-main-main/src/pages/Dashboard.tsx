@@ -23,9 +23,10 @@ interface RecentRow {
   hospitals: { nome: string } | null;
   sectors: { nome: string } | null;
 }
-interface RpcMensal  { ano_mes: string; faturamento: number; repasse: number; plantoes: number; }
-interface RpcCliente { hospital_id: string; nome: string; faturamento: number; }
-interface RpcSetor   { setor_id: string; nome: string; faturamento: number; }
+interface RpcMensal    { ano_mes: string; faturamento: number; repasse: number; plantoes: number; }
+interface RpcCliente   { hospital_id: string; nome: string; faturamento: number; }
+interface RpcSetor     { setor_id: string; nome: string; faturamento: number; }
+interface RpcCategoria { ano_mes: string; enfermeiros: number; tecnicos: number; }
 interface Hospital { id: string; nome: string; }
 interface Sector   { id: string; nome: string; hospital_id: string; }
 
@@ -55,6 +56,7 @@ export default function Dashboard() {
   const [dadosMensaisRpc,    setDadosMensaisRpc]    = useState<RpcMensal[]>([]);
   const [dadosPorClienteRpc, setDadosPorClienteRpc] = useState<RpcCliente[]>([]);
   const [dadosPorSetorRpc,   setDadosPorSetorRpc]   = useState<RpcSetor[]>([]);
+  const [dadosCategoriaRpc,  setDadosCategoriaRpc]  = useState<RpcCategoria[]>([]);
   const [hospitals, setHospitals] = useState<Hospital[]>([]);
   const [sectors, setSectors]     = useState<Sector[]>([]);
   const [loadingChart, setLoadingChart] = useState(true);
@@ -112,10 +114,11 @@ export default function Dashboard() {
       const hospId  = filtroHospital === '__todos__' ? null : filtroHospital;
       const setorId = filtroSetor   === '__todos__' ? null : filtroSetor;
 
-      const [{ data: mensal }, { data: porCliente }, { data: porSetor }, { data: hosp }, { data: sects }] = await Promise.all([
-        supabase.rpc('dashboard_mensal',      { p_inicio: inicio, p_fim: fim, p_hospital_id: hospId, p_setor_id: setorId }),
-        supabase.rpc('dashboard_por_cliente', { p_inicio: inicio, p_fim: fim, p_setor_id: setorId }),
-        supabase.rpc('dashboard_por_setor',   { p_inicio: inicio, p_fim: fim, p_hospital_id: hospId }),
+      const [{ data: mensal }, { data: porCliente }, { data: porSetor }, { data: categoria }, { data: hosp }, { data: sects }] = await Promise.all([
+        supabase.rpc('dashboard_mensal',               { p_inicio: inicio, p_fim: fim, p_hospital_id: hospId, p_setor_id: setorId }),
+        supabase.rpc('dashboard_por_cliente',          { p_inicio: inicio, p_fim: fim, p_setor_id: setorId }),
+        supabase.rpc('dashboard_por_setor',            { p_inicio: inicio, p_fim: fim, p_hospital_id: hospId }),
+        supabase.rpc('dashboard_plantoes_por_categoria', { p_inicio: inicio, p_fim: fim, p_hospital_id: hospId, p_setor_id: setorId }),
         supabase.from('hospitals').select('id, nome').order('nome'),
         supabase.from('sectors').select('id, nome, hospital_id').eq('ativo', true).order('nome'),
       ]);
@@ -123,6 +126,7 @@ export default function Dashboard() {
       setDadosMensaisRpc(mensal ?? []);
       setDadosPorClienteRpc(porCliente ?? []);
       setDadosPorSetorRpc(porSetor ?? []);
+      setDadosCategoriaRpc((categoria ?? []) as RpcCategoria[]);
       setHospitals(hosp ?? []);
       setSectors((sects ?? []) as Sector[]);
       setLoadingChart(false);
@@ -174,6 +178,26 @@ export default function Dashboard() {
   const dadosPorSetor = useMemo(() =>
     dadosPorSetorRpc.map(r => ({ nome: r.nome, valor: Number(r.faturamento) })),
   [dadosPorSetorRpc]);
+
+  // ── Gráfico 5: Plantões por categoria (Enfermeiro vs Técnico) ──────────────
+  const dadosCategoria = useMemo(() => {
+    const mapa: Record<string, { mes: string; enfermeiros: number; tecnicos: number }> = {};
+    const [anoI, mesI] = periodoInicio.split('-').map(Number);
+    const [anoF, mesF] = periodoFim.split('-').map(Number);
+    let ano = anoI; let mes = mesI;
+    while (ano < anoF || (ano === anoF && mes <= mesF)) {
+      const key = `${ano}-${String(mes).padStart(2, '0')}`;
+      mapa[key] = { mes: `${MESES[mes - 1]}/${String(ano).slice(2)}`, enfermeiros: 0, tecnicos: 0 };
+      mes++; if (mes > 12) { mes = 1; ano++; }
+    }
+    dadosCategoriaRpc.forEach(r => {
+      if (mapa[r.ano_mes]) {
+        mapa[r.ano_mes].enfermeiros = Number(r.enfermeiros);
+        mapa[r.ano_mes].tecnicos    = Number(r.tecnicos);
+      }
+    });
+    return Object.values(mapa);
+  }, [dadosCategoriaRpc, periodoInicio, periodoFim]);
 
   // ── KPI cards (existentes) ─────────────────────────────────────────────────
   const cards = [
@@ -493,6 +517,29 @@ export default function Dashboard() {
                     </CardContent>
                   </Card>
                 </div>
+
+                {/* Gráfico 5 — Plantões por categoria */}
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm">Plantões por Mês — Enfermeiros vs Técnicos</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <ResponsiveContainer width="100%" height={280}>
+                      <BarChart data={dadosCategoria} margin={{ top: 4, right: 16, left: 0, bottom: 4 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                        <XAxis dataKey="mes" tick={{ fontSize: 11 }} />
+                        <YAxis tick={{ fontSize: 11 }} width={45} />
+                        <Tooltip
+                          contentStyle={tooltipStyle}
+                          formatter={(v: number, name: string) => [v + ' plantões', name]}
+                        />
+                        <Legend wrapperStyle={{ fontSize: 12 }} />
+                        <Bar dataKey="enfermeiros" name="Enfermeiros" fill={NAVY}  radius={[3,3,0,0]} />
+                        <Bar dataKey="tecnicos"    name="Técnicos"    fill={BLUE}  radius={[3,3,0,0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </CardContent>
+                </Card>
 
                 {/* Gráfico 4 — Evolução repasse (linha) */}
                 <Card>
