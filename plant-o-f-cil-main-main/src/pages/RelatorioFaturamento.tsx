@@ -6,7 +6,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ResponsiveContainer, PieChart, Pie, Cell,
 } from 'recharts';
-import { Printer, ArrowLeft } from 'lucide-react';
+import { Printer, ArrowLeft, TrendingUp, TrendingDown, Minus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -16,9 +16,21 @@ const GREEN = '#16a34a';
 const BLUE  = '#2563eb';
 const CORES = ['#1a2f5a','#2563eb','#16a34a','#d97706','#dc2626','#7c3aed','#0891b2','#be185d','#059669','#b45309'];
 const MESES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+const MESES_CURTO = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
 
 interface KpiData    { total_plantoes: number; faturamento: number; repasse: number; }
 interface ClienteRow { hospital_id: string; nome: string; faturamento: number; repasse: number; }
+interface CategoriaRow { ano_mes: string; enfermeiros: number; tecnicos: number; }
+interface ProfRow    { profissao: string; qtd: number; faturamento: number; repasse: number; }
+interface SetorRelRow { setor_id: string; setor_nome: string; qtd: number; faturamento: number; repasse: number; }
+
+const PROF_LABEL: Record<string, string> = {
+  enfermeiro:          'Enfermeiro',
+  tecnico_enfermagem:  'Técnico de Enfermagem',
+  tecnico_hemodialise: 'Técnico em Hemodiálise',
+  assistente_social:   'Assistente Social',
+  fonoaudiologo:       'Fonoaudiólogo',
+};
 
 const fmtK = (v: number) => v >= 1000 ? `R$${(v / 1000).toFixed(0)}k` : formatCurrency(v);
 
@@ -28,6 +40,23 @@ function labelPeriodo(inicio: string, fim: string) {
   if (inicio === fim) return `${MESES[mesI - 1]} de ${anoI}`;
   if (anoI === anoF)  return `${MESES[mesI - 1]} a ${MESES[mesF - 1]} de ${anoI}`;
   return `${MESES[mesI - 1]}/${anoI} a ${MESES[mesF - 1]}/${anoF}`;
+}
+
+function labelPeriodoCurto(inicio: string, fim: string) {
+  const [anoI, mesI] = inicio.split('-').map(Number);
+  const [anoF, mesF] = fim.split('-').map(Number);
+  if (inicio === fim) return `${MESES_CURTO[mesI - 1]}/${anoI}`;
+  return `${MESES_CURTO[mesI - 1]}/${anoI} a ${MESES_CURTO[mesF - 1]}/${anoF}`;
+}
+
+function calcPeriodoAnterior(inicioMes: string, fimMes: string) {
+  const [anoI, mesI] = inicioMes.split('-').map(Number);
+  const [anoF, mesF] = fimMes.split('-').map(Number);
+  const durMeses = (anoF - anoI) * 12 + (mesF - mesI) + 1;
+  const fimAntDate    = new Date(anoI, mesI - 2, 1);
+  const inicioAntDate = new Date(fimAntDate.getFullYear(), fimAntDate.getMonth() - durMeses + 1, 1);
+  const fmt = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  return { inicioAnt: fmt(inicioAntDate), fimAnt: fmt(fimAntDate) };
 }
 
 interface Hospital { id: string; nome: string; }
@@ -51,9 +80,16 @@ export default function RelatorioFaturamento() {
   const [hospitals, setHospitals] = useState<Hospital[]>([]);
   const [sectors,   setSectors]   = useState<Sector[]>([]);
 
-  const [kpi,      setKpi]      = useState<KpiData | null>(null);
-  const [clientes, setClientes] = useState<ClienteRow[]>([]);
-  const [loading,  setLoading]  = useState(true);
+  const [kpi,           setKpi]           = useState<KpiData | null>(null);
+  const [clientes,      setClientes]      = useState<ClienteRow[]>([]);
+  const [catAtual,      setCatAtual]      = useState<CategoriaRow[]>([]);
+  const [catAnterior,   setCatAnterior]   = useState<CategoriaRow[]>([]);
+  const [profAtual,     setProfAtual]     = useState<ProfRow[]>([]);
+  const [profAnterior,  setProfAnterior]  = useState<ProfRow[]>([]);
+  const [setoresAtual,  setSetoresAtual]  = useState<SetorRelRow[]>([]);
+  const [setoresAnt,    setSetoresAnt]    = useState<SetorRelRow[]>([]);
+  const [periodoAnt,    setPeriodoAnt]    = useState({ inicioAnt: '', fimAnt: '' });
+  const [loading,       setLoading]       = useState(true);
 
   useEffect(() => {
     supabase.from('hospitals').select('id, nome').order('nome').then(({ data }) => setHospitals(data ?? []));
@@ -73,10 +109,36 @@ export default function RelatorioFaturamento() {
       const hId = hospitalId || null;
       const sId = setorId    || null;
 
-      const [{ data: kpiData }, { data: clienteData }] = await Promise.all([
-        supabase.rpc('dashboard_kpi',        { p_inicio: inicioDate, p_fim: fimDate, p_hospital_id: hId, p_setor_id: sId }),
-        supabase.rpc('relatorio_por_cliente', { p_inicio: inicioDate, p_fim: fimDate, p_hospital_id: hId, p_setor_id: sId }),
-      ]);
+      const ant = calcPeriodoAnterior(inicio, fim);
+      const inicioDateAnt = `${ant.inicioAnt}-01`;
+      const [anoFAnt, mesFAnt] = ant.fimAnt.split('-').map(Number);
+      const fimDateAnt = new Date(anoFAnt, mesFAnt, 0).toISOString().slice(0, 10);
+      setPeriodoAnt(ant);
+
+      const basePromises = [
+        supabase.rpc('dashboard_kpi',                      { p_inicio: inicioDate,    p_fim: fimDate,    p_hospital_id: hId, p_setor_id: sId }),
+        supabase.rpc('relatorio_por_cliente',              { p_inicio: inicioDate,    p_fim: fimDate,    p_hospital_id: hId, p_setor_id: sId }),
+        supabase.rpc('dashboard_plantoes_por_categoria',   { p_inicio: inicioDate,    p_fim: fimDate,    p_hospital_id: hId, p_setor_id: sId }),
+        supabase.rpc('dashboard_plantoes_por_categoria',   { p_inicio: inicioDateAnt, p_fim: fimDateAnt, p_hospital_id: hId, p_setor_id: sId }),
+        supabase.rpc('relatorio_plantoes_por_profissao',   { p_inicio: inicioDate,    p_fim: fimDate,    p_hospital_id: hId, p_setor_id: sId }),
+        supabase.rpc('relatorio_plantoes_por_profissao',   { p_inicio: inicioDateAnt, p_fim: fimDateAnt, p_hospital_id: hId, p_setor_id: sId }),
+      ] as const;
+
+      const setoresPromises = hId ? [
+        supabase.rpc('relatorio_setores_cliente', { p_inicio: inicioDate,    p_fim: fimDate,    p_hospital_id: hId, p_setor_id: sId }),
+        supabase.rpc('relatorio_setores_cliente', { p_inicio: inicioDateAnt, p_fim: fimDateAnt, p_hospital_id: hId, p_setor_id: sId }),
+      ] : [Promise.resolve({ data: [] }), Promise.resolve({ data: [] })];
+
+      const [
+        { data: kpiData },
+        { data: clienteData },
+        { data: catAtualData },
+        { data: catAntData },
+        { data: profAtualData },
+        { data: profAntData },
+        { data: setAtualData },
+        { data: setAntData },
+      ] = await Promise.all([...basePromises, ...setoresPromises]);
 
       const k = kpiData?.[0];
       setKpi(k ? {
@@ -90,6 +152,12 @@ export default function RelatorioFaturamento() {
         faturamento: Number(c.faturamento),
         repasse:     Number(c.repasse),
       })));
+      setCatAtual((catAtualData ?? []) as CategoriaRow[]);
+      setCatAnterior((catAntData  ?? []) as CategoriaRow[]);
+      setProfAtual((profAtualData ?? []).map((r: any) => ({ profissao: r.profissao, qtd: Number(r.qtd), faturamento: Number(r.faturamento), repasse: Number(r.repasse) })));
+      setProfAnterior((profAntData  ?? []).map((r: any) => ({ profissao: r.profissao, qtd: Number(r.qtd), faturamento: Number(r.faturamento), repasse: Number(r.repasse) })));
+      setSetoresAtual((setAtualData ?? []).map((r: any) => ({ setor_id: r.setor_id, setor_nome: r.setor_nome, qtd: Number(r.qtd), faturamento: Number(r.faturamento), repasse: Number(r.repasse) })));
+      setSetoresAnt((setAntData   ?? []).map((r: any) => ({ setor_id: r.setor_id, setor_nome: r.setor_nome, qtd: Number(r.qtd), faturamento: Number(r.faturamento), repasse: Number(r.repasse) })));
       setLoading(false);
     })();
   }, [inicio, fim, hospitalId, setorId]);
@@ -105,13 +173,151 @@ export default function RelatorioFaturamento() {
     })),
   [clientes]);
 
+  // Totais de plantões por categoria
+  const totEnfAtual = useMemo(() => catAtual.reduce((s, r)    => s + Number(r.enfermeiros), 0), [catAtual]);
+  const totTecAtual = useMemo(() => catAtual.reduce((s, r)    => s + Number(r.tecnicos),    0), [catAtual]);
+  const totEnfAnt   = useMemo(() => catAnterior.reduce((s, r) => s + Number(r.enfermeiros), 0), [catAnterior]);
+  const totTecAnt   = useMemo(() => catAnterior.reduce((s, r) => s + Number(r.tecnicos),    0), [catAnterior]);
+
+  const varEnf = totEnfAnt > 0 ? ((totEnfAtual - totEnfAnt) / totEnfAnt) * 100 : null;
+  const varTec = totTecAnt > 0 ? ((totTecAtual - totTecAnt) / totTecAnt) * 100 : null;
+
+  // Observações automáticas por profissão
+  const obsProf = useMemo(() => {
+    if (profAtual.length === 0 && profAnterior.length === 0) return [];
+    const frases: string[] = [];
+    const mapAtual = Object.fromEntries(profAtual.map(r => [r.profissao, r]));
+    const mapAnt   = Object.fromEntries(profAnterior.map(r => [r.profissao, r]));
+    const periodoAntLabel = periodoAnt.inicioAnt ? labelPeriodoCurto(periodoAnt.inicioAnt, periodoAnt.fimAnt) : '';
+
+    // Categorias que desapareceram
+    const desaparecidas = profAnterior.filter(r => !mapAtual[r.profissao] || mapAtual[r.profissao].qtd === 0);
+    if (desaparecidas.length > 0) {
+      const nomes = desaparecidas.map(r => PROF_LABEL[r.profissao] ?? r.profissao).join(' e ');
+      const valorPerdido = desaparecidas.reduce((s, r) => s + r.faturamento, 0);
+      frases.push(`Não houve plantões de ${nomes} neste período${periodoAntLabel ? `, categorias que representavam ${formatCurrency(valorPerdido)} em ${periodoAntLabel}` : ''}.`);
+    }
+
+    // Categorias que apareceram
+    const novas = profAtual.filter(r => !mapAnt[r.profissao] || mapAnt[r.profissao].qtd === 0);
+    if (novas.length > 0) {
+      const nomes = novas.map(r => PROF_LABEL[r.profissao] ?? r.profissao).join(' e ');
+      const valorGanho = novas.reduce((s, r) => s + r.faturamento, 0);
+      frases.push(`Nova(s) categoria(s) registrada(s) neste período: ${nomes}, contribuindo com ${formatCurrency(valorGanho)} no faturamento.`);
+    }
+
+    // Variações significativas (≥5%) nas categorias que existem nos dois períodos
+    const jaCitadas = new Set([...desaparecidas.map(r => r.profissao), ...novas.map(r => r.profissao)]);
+    for (const r of profAtual) {
+      if (jaCitadas.has(r.profissao)) continue;
+      const ant = mapAnt[r.profissao];
+      if (!ant || ant.qtd === 0) continue;
+      const varPct = ((r.qtd - ant.qtd) / ant.qtd) * 100;
+      const varFat = r.faturamento - ant.faturamento;
+      if (Math.abs(varPct) < 5) continue;
+      const label  = PROF_LABEL[r.profissao] ?? r.profissao;
+      const dir    = varPct > 0 ? 'crescimento' : 'redução';
+      const sinalF = varFat >= 0 ? '+' : '';
+      frases.push(`${label}: ${dir} de ${varPct > 0 ? '+' : ''}${varPct.toFixed(1)}% (${ant.qtd}→${r.qtd} plantões), impacto de ${sinalF}${formatCurrency(Math.abs(varFat))} no faturamento.`);
+    }
+
+    // Análise de compensação quando houve desaparecimento
+    if (desaparecidas.length > 0) {
+      const valorPerdido = desaparecidas.reduce((s, r) => s + r.faturamento, 0);
+      const totalGanho = profAtual
+        .filter(r => !jaCitadas.has(r.profissao) || novas.find(n => n.profissao === r.profissao))
+        .reduce((s, r) => {
+          const ant = mapAnt[r.profissao];
+          const fatAnt = ant ? ant.faturamento : 0;
+          return s + Math.max(0, r.faturamento - fatAnt);
+        }, 0);
+      if (totalGanho > 0) {
+        const comp = totalGanho >= valorPerdido ? 'integralmente' : 'parcialmente';
+        frases.push(`O crescimento das demais categorias (${formatCurrency(totalGanho)}) compensou ${comp} a ausência das categorias citadas (${formatCurrency(valorPerdido)}).`);
+      }
+    }
+
+    return frases;
+  }, [profAtual, profAnterior, periodoAnt]);
+
+  // Todas as profissões presentes em qualquer um dos períodos
+  const todasProfs = useMemo(() => {
+    const set = new Set([...profAtual.map(r => r.profissao), ...profAnterior.map(r => r.profissao)]);
+    return [...set].sort((a, b) => {
+      const fa = profAtual.find(r => r.profissao === a)?.faturamento ?? 0;
+      const fb = profAtual.find(r => r.profissao === b)?.faturamento ?? 0;
+      return fb - fa;
+    });
+  }, [profAtual, profAnterior]);
+
+  // Todos os setores presentes em qualquer um dos períodos
+  const todosSets = useMemo(() => {
+    const map = new Map<string, string>();
+    setoresAtual.forEach(r => map.set(r.setor_id, r.setor_nome));
+    setoresAnt.forEach(r => { if (!map.has(r.setor_id)) map.set(r.setor_id, r.setor_nome); });
+    return [...map.entries()].sort((a, b) => {
+      const fa = setoresAtual.find(r => r.setor_id === a[0])?.faturamento ?? 0;
+      const fb = setoresAtual.find(r => r.setor_id === b[0])?.faturamento ?? 0;
+      return fb - fa;
+    });
+  }, [setoresAtual, setoresAnt]);
+
+  // Observações automáticas por setor
+  const obsSetores = useMemo(() => {
+    if (setoresAtual.length === 0 && setoresAnt.length === 0) return [];
+    const frases: string[] = [];
+    const mapAt = Object.fromEntries(setoresAtual.map(r => [r.setor_id, r]));
+    const mapAn = Object.fromEntries(setoresAnt.map(r => [r.setor_id, r]));
+    const periodoAntLabel = periodoAnt.inicioAnt ? labelPeriodoCurto(periodoAnt.inicioAnt, periodoAnt.fimAnt) : '';
+
+    // Setores que desapareceram
+    const desapar = setoresAnt.filter(r => !mapAt[r.setor_id] || mapAt[r.setor_id].qtd === 0);
+    if (desapar.length > 0) {
+      const nomes = desapar.map(r => r.setor_nome).join(', ');
+      const valor = desapar.reduce((s, r) => s + r.faturamento, 0);
+      frases.push(`Setores sem plantões neste período: ${nomes}${periodoAntLabel ? ` (representavam ${formatCurrency(valor)} em ${periodoAntLabel})` : ''}.`);
+    }
+
+    // Setores novos
+    const novos = setoresAtual.filter(r => !mapAn[r.setor_id] || mapAn[r.setor_id].qtd === 0);
+    if (novos.length > 0) {
+      const nomes = novos.map(r => r.setor_nome).join(', ');
+      const valor = novos.reduce((s, r) => s + r.faturamento, 0);
+      frases.push(`Novo(s) setor(es) com plantões neste período: ${nomes}, contribuindo com ${formatCurrency(valor)}.`);
+    }
+
+    // Variações significativas (≥5%)
+    const citados = new Set([...desapar.map(r => r.setor_id), ...novos.map(r => r.setor_id)]);
+    for (const r of setoresAtual) {
+      if (citados.has(r.setor_id)) continue;
+      const an = mapAn[r.setor_id];
+      if (!an || an.qtd === 0) continue;
+      const varPct = ((r.qtd - an.qtd) / an.qtd) * 100;
+      const varFat = r.faturamento - an.faturamento;
+      if (Math.abs(varPct) < 5) continue;
+      const dir    = varPct > 0 ? 'crescimento' : 'redução';
+      const sinalF = varFat >= 0 ? '+' : '';
+      frases.push(`Setor ${r.setor_nome}: ${dir} de ${varPct > 0 ? '+' : ''}${varPct.toFixed(1)}% (${an.qtd}→${r.qtd} plantões), impacto de ${sinalF}${formatCurrency(Math.abs(varFat))}.`);
+    }
+
+    // Setor destaque (maior faturamento)
+    if (setoresAtual.length > 0) {
+      const top = setoresAtual[0];
+      const total = setoresAtual.reduce((s, r) => s + r.faturamento, 0);
+      const pct = total > 0 ? ((top.faturamento / total) * 100).toFixed(0) : '0';
+      frases.push(`O setor com maior faturamento foi ${top.setor_nome} (${formatCurrency(top.faturamento)}, ${pct}% do total do cliente).`);
+    }
+
+    return frases;
+  }, [setoresAtual, setoresAnt, periodoAnt]);
+
   const analise = useMemo(() => {
     if (!kpi || clientes.length === 0) return [];
-    const sorted     = [...clientesComMargem].sort((a, b) => b.faturamento - a.faturamento);
-    const maiorFat   = sorted[0];
-    const maiorMarg  = [...clientesComMargem].sort((a, b) => b.margem - a.margem)[0];
-    const maiorPct   = [...clientesComMargem].sort((a, b) => b.pctRepasse - a.pctRepasse)[0];
-    const alertas    = clientesComMargem.filter(c => c.pctRepasse > 80);
+    const sorted    = [...clientesComMargem].sort((a, b) => b.faturamento - a.faturamento);
+    const maiorFat  = sorted[0];
+    const maiorMarg = [...clientesComMargem].sort((a, b) => b.margem - a.margem)[0];
+    const maiorPct  = [...clientesComMargem].sort((a, b) => b.pctRepasse - a.pctRepasse)[0];
+    const periodoAntLabel = labelPeriodoCurto(periodoAnt.inicioAnt, periodoAnt.fimAnt);
 
     const frases: string[] = [
       `No período analisado, o faturamento total foi de ${formatCurrency(kpi.faturamento)}, com repasse de ${formatCurrency(kpi.repasse)} aos cooperados, resultando em margem operacional de ${formatCurrency(margem)} (${pctRepasse.toFixed(2)}% de repasse sobre o faturamento).`,
@@ -119,8 +325,34 @@ export default function RelatorioFaturamento() {
     if (maiorFat)  frases.push(`O cliente com maior volume foi ${maiorFat.nome}, representando ${kpi.faturamento > 0 ? ((maiorFat.faturamento / kpi.faturamento) * 100).toFixed(2) : 0}% do faturamento total (${formatCurrency(maiorFat.faturamento)}).`);
     if (maiorMarg) frases.push(`A maior margem operacional foi registrada em ${maiorMarg.nome}, com ${formatCurrency(maiorMarg.margem)} de diferença entre faturado e repassado.`);
     if (maiorPct)  frases.push(`O maior percentual de repasse foi de ${maiorPct.pctRepasse.toFixed(2)}%, referente ao cliente ${maiorPct.nome}.`);
+
+    // Análise de plantões por categoria
+    const totalAtual = totEnfAtual + totTecAtual;
+    if (totalAtual > 0) {
+      const pctEnf = ((totEnfAtual / totalAtual) * 100).toFixed(0);
+      const pctTec = ((totTecAtual / totalAtual) * 100).toFixed(0);
+      frases.push(`Quanto à distribuição de plantões, foram realizados ${totEnfAtual} plantões de enfermeiros (${pctEnf}%) e ${totTecAtual} de técnicos de enfermagem (${pctTec}%) no período.`);
+    }
+
+    if (varEnf !== null) {
+      const dir = varEnf > 0 ? 'aumento' : varEnf < 0 ? 'queda' : 'estabilidade';
+      const abs = Math.abs(varEnf).toFixed(1);
+      frases.push(`Comparando com o período anterior (${periodoAntLabel}): plantões de enfermeiros tiveram ${dir} de ${abs}% (de ${totEnfAnt} para ${totEnfAtual}).`);
+    }
+    if (varTec !== null) {
+      const dir = varTec > 0 ? 'aumento' : varTec < 0 ? 'queda' : 'estabilidade';
+      const abs = Math.abs(varTec).toFixed(1);
+      frases.push(`Plantões de técnicos de enfermagem tiveram ${dir} de ${abs}% em relação ao período anterior (de ${totTecAnt} para ${totTecAtual}).`);
+    }
+
+    // Inserir observações de profissão
+    obsProf.forEach(f => frases.push(f));
+
+    // Inserir observações de setor (apenas quando hospital selecionado)
+    obsSetores.forEach(f => frases.push(f));
+
     return frases;
-  }, [kpi, clientes, clientesComMargem, margem, pctRepasse]);
+  }, [kpi, clientes, clientesComMargem, margem, pctRepasse, totEnfAtual, totTecAtual, totEnfAnt, totTecAnt, varEnf, varTec, periodoAnt, obsProf, obsSetores]);
 
   const periodo  = labelPeriodo(inicio, fim);
   const dataGer  = hoje.toLocaleDateString('pt-BR');
@@ -333,7 +565,239 @@ export default function RelatorioFaturamento() {
               </section>
             )}
 
-            {/* Seção 4 — Análise automática */}
+            {/* Seção 4 — Análise de Plantões por Categoria */}
+            {(totEnfAtual > 0 || totTecAtual > 0 || totEnfAnt > 0 || totTecAnt > 0) && (
+              <section className="mb-10 break-avoid">
+                <h3 className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: NAVY }}>
+                  Análise de Plantões por Categoria
+                </h3>
+
+                <div className="grid grid-cols-2 gap-6">
+                  {/* Card Enfermeiros */}
+                  <div className="rounded-xl border p-5" style={{ borderColor: '#e5e7eb' }}>
+                    <div className="flex items-center justify-between mb-3">
+                      <p className="text-[11px] font-bold uppercase tracking-wider text-gray-400">Enfermeiros</p>
+                      <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold"
+                        style={{ backgroundColor: '#eff6ff', color: NAVY }}>
+                        {totEnfAtual + totTecAtual > 0
+                          ? `${((totEnfAtual / (totEnfAtual + totTecAtual)) * 100).toFixed(0)}% do total`
+                          : '—'}
+                      </span>
+                    </div>
+                    <p className="text-3xl font-bold tabular-nums" style={{ color: NAVY }}>{totEnfAtual}</p>
+                    <p className="text-xs text-gray-400 mt-0.5">plantões no período</p>
+
+                    {varEnf !== null && (
+                      <div className="mt-3 pt-3 border-t flex items-center gap-2">
+                        {varEnf > 0
+                          ? <TrendingUp className="h-4 w-4 text-green-600 flex-shrink-0" />
+                          : varEnf < 0
+                            ? <TrendingDown className="h-4 w-4 text-red-500 flex-shrink-0" />
+                            : <Minus className="h-4 w-4 text-gray-400 flex-shrink-0" />}
+                        <div>
+                          <span className={`text-sm font-bold ${varEnf > 0 ? 'text-green-600' : varEnf < 0 ? 'text-red-500' : 'text-gray-400'}`}>
+                            {varEnf > 0 ? '+' : ''}{varEnf.toFixed(1)}%
+                          </span>
+                          <span className="text-xs text-gray-400 ml-1">
+                            vs período anterior ({totEnfAnt} plantões)
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                    {varEnf === null && totEnfAnt === 0 && (
+                      <p className="mt-3 pt-3 border-t text-xs text-gray-400 italic">Sem dados do período anterior</p>
+                    )}
+                  </div>
+
+                  {/* Card Técnicos */}
+                  <div className="rounded-xl border p-5" style={{ borderColor: '#e5e7eb' }}>
+                    <div className="flex items-center justify-between mb-3">
+                      <p className="text-[11px] font-bold uppercase tracking-wider text-gray-400">Técnicos de Enfermagem</p>
+                      <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold"
+                        style={{ backgroundColor: '#f0fdf4', color: GREEN }}>
+                        {totEnfAtual + totTecAtual > 0
+                          ? `${((totTecAtual / (totEnfAtual + totTecAtual)) * 100).toFixed(0)}% do total`
+                          : '—'}
+                      </span>
+                    </div>
+                    <p className="text-3xl font-bold tabular-nums" style={{ color: GREEN }}>{totTecAtual}</p>
+                    <p className="text-xs text-gray-400 mt-0.5">plantões no período</p>
+
+                    {varTec !== null && (
+                      <div className="mt-3 pt-3 border-t flex items-center gap-2">
+                        {varTec > 0
+                          ? <TrendingUp className="h-4 w-4 text-green-600 flex-shrink-0" />
+                          : varTec < 0
+                            ? <TrendingDown className="h-4 w-4 text-red-500 flex-shrink-0" />
+                            : <Minus className="h-4 w-4 text-gray-400 flex-shrink-0" />}
+                        <div>
+                          <span className={`text-sm font-bold ${varTec > 0 ? 'text-green-600' : varTec < 0 ? 'text-red-500' : 'text-gray-400'}`}>
+                            {varTec > 0 ? '+' : ''}{varTec.toFixed(1)}%
+                          </span>
+                          <span className="text-xs text-gray-400 ml-1">
+                            vs período anterior ({totTecAnt} plantões)
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                    {varTec === null && totTecAnt === 0 && (
+                      <p className="mt-3 pt-3 border-t text-xs text-gray-400 italic">Sem dados do período anterior</p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Tabela detalhada por profissão */}
+                {todasProfs.length > 0 && (
+                  <table className="w-full text-sm border-collapse mt-5">
+                    <thead>
+                      <tr style={{ backgroundColor: NAVY, color: 'white' }}>
+                        <th className="text-left px-4 py-2.5 font-semibold">Profissão</th>
+                        <th className="text-right px-4 py-2.5 font-semibold">
+                          {periodoAnt.inicioAnt ? labelPeriodoCurto(periodoAnt.inicioAnt, periodoAnt.fimAnt) : 'Período anterior'}
+                        </th>
+                        <th className="text-right px-4 py-2.5 font-semibold">Faturado anterior</th>
+                        <th className="text-right px-4 py-2.5 font-semibold">
+                          {labelPeriodoCurto(inicio, fim)}
+                        </th>
+                        <th className="text-right px-4 py-2.5 font-semibold">Faturado atual</th>
+                        <th className="text-right px-4 py-2.5 font-semibold">Variação</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {todasProfs.map((prof, i) => {
+                        const at  = profAtual.find(r => r.profissao === prof);
+                        const an  = profAnterior.find(r => r.profissao === prof);
+                        const qtdAt  = at?.qtd ?? 0;
+                        const qtdAn  = an?.qtd ?? 0;
+                        const fatAt  = at?.faturamento ?? 0;
+                        const fatAn  = an?.faturamento ?? 0;
+                        const varPct = qtdAn > 0 ? ((qtdAt - qtdAn) / qtdAn) * 100 : null;
+                        const sumido = qtdAt === 0 && qtdAn > 0;
+                        const novo   = qtdAt > 0 && qtdAn === 0;
+                        return (
+                          <tr key={prof} style={{
+                            backgroundColor: sumido ? '#fff5f5' : novo ? '#f0fdf4' : i % 2 === 0 ? '#f8f9fc' : 'white',
+                          }}>
+                            <td className="px-4 py-2 font-medium">
+                              {PROF_LABEL[prof] ?? prof}
+                              {sumido && <span className="ml-2 text-[10px] text-red-500 font-semibold">AUSENTE</span>}
+                              {novo   && <span className="ml-2 text-[10px] text-green-600 font-semibold">NOVO</span>}
+                            </td>
+                            <td className="px-4 py-2 text-right tabular-nums text-gray-500">{qtdAn || '—'}</td>
+                            <td className="px-4 py-2 text-right tabular-nums text-gray-500">{fatAn > 0 ? formatCurrency(fatAn) : '—'}</td>
+                            <td className="px-4 py-2 text-right tabular-nums font-medium">{qtdAt || '—'}</td>
+                            <td className="px-4 py-2 text-right tabular-nums font-medium">{fatAt > 0 ? formatCurrency(fatAt) : '—'}</td>
+                            <td className="px-4 py-2 text-right tabular-nums font-semibold"
+                              style={{ color: varPct == null ? '#9ca3af' : varPct > 0 ? '#16a34a' : varPct < 0 ? '#dc2626' : '#9ca3af' }}>
+                              {sumido ? '−100%' : novo ? 'Novo' : varPct == null ? '—' : `${varPct > 0 ? '+' : ''}${varPct.toFixed(1)}%`}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {/* Linha de total */}
+                      {(() => {
+                        const totQtAt = profAtual.reduce((s, r) => s + r.qtd, 0);
+                        const totQtAn = profAnterior.reduce((s, r) => s + r.qtd, 0);
+                        const totFtAt = profAtual.reduce((s, r) => s + r.faturamento, 0);
+                        const totFtAn = profAnterior.reduce((s, r) => s + r.faturamento, 0);
+                        const vp = totQtAn > 0 ? ((totQtAt - totQtAn) / totQtAn) * 100 : null;
+                        return (
+                          <tr style={{ backgroundColor: NAVY, color: 'white', fontWeight: 700 }}>
+                            <td className="px-4 py-2.5">TOTAL</td>
+                            <td className="px-4 py-2.5 text-right tabular-nums">{totQtAn}</td>
+                            <td className="px-4 py-2.5 text-right tabular-nums">{formatCurrency(totFtAn)}</td>
+                            <td className="px-4 py-2.5 text-right tabular-nums">{totQtAt}</td>
+                            <td className="px-4 py-2.5 text-right tabular-nums">{formatCurrency(totFtAt)}</td>
+                            <td className="px-4 py-2.5 text-right tabular-nums">
+                              {vp == null ? '—' : `${vp > 0 ? '+' : ''}${vp.toFixed(1)}%`}
+                            </td>
+                          </tr>
+                        );
+                      })()}
+                    </tbody>
+                  </table>
+                )}
+              </section>
+            )}
+
+            {/* Seção 5 — Análise por Setor (apenas quando cliente específico selecionado) */}
+            {hospitalId && todosSets.length > 0 && (
+              <section className="mb-10 break-avoid">
+                <h3 className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: NAVY }}>
+                  Análise por Setor
+                </h3>
+                <table className="w-full text-sm border-collapse">
+                  <thead>
+                    <tr style={{ backgroundColor: NAVY, color: 'white' }}>
+                      <th className="text-left px-4 py-2.5 font-semibold">Setor</th>
+                      <th className="text-right px-4 py-2.5 font-semibold">
+                        {periodoAnt.inicioAnt ? labelPeriodoCurto(periodoAnt.inicioAnt, periodoAnt.fimAnt) : 'Período anterior'}
+                      </th>
+                      <th className="text-right px-4 py-2.5 font-semibold">Faturado anterior</th>
+                      <th className="text-right px-4 py-2.5 font-semibold">
+                        {labelPeriodoCurto(inicio, fim)}
+                      </th>
+                      <th className="text-right px-4 py-2.5 font-semibold">Faturado atual</th>
+                      <th className="text-right px-4 py-2.5 font-semibold">Variação</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {todosSets.map(([sid, sNome], i) => {
+                      const at = setoresAtual.find(r => r.setor_id === sid);
+                      const an = setoresAnt.find(r => r.setor_id === sid);
+                      const qtdAt  = at?.qtd ?? 0;
+                      const qtdAn  = an?.qtd ?? 0;
+                      const fatAt  = at?.faturamento ?? 0;
+                      const fatAn  = an?.faturamento ?? 0;
+                      const varPct = qtdAn > 0 ? ((qtdAt - qtdAn) / qtdAn) * 100 : null;
+                      const sumido = qtdAt === 0 && qtdAn > 0;
+                      const novo   = qtdAt > 0 && qtdAn === 0;
+                      return (
+                        <tr key={sid} style={{
+                          backgroundColor: sumido ? '#fff5f5' : novo ? '#f0fdf4' : i % 2 === 0 ? '#f8f9fc' : 'white',
+                        }}>
+                          <td className="px-4 py-2 font-medium">
+                            {sNome}
+                            {sumido && <span className="ml-2 text-[10px] text-red-500 font-semibold">SEM PLANTÕES</span>}
+                            {novo   && <span className="ml-2 text-[10px] text-green-600 font-semibold">NOVO</span>}
+                          </td>
+                          <td className="px-4 py-2 text-right tabular-nums text-gray-500">{qtdAn || '—'}</td>
+                          <td className="px-4 py-2 text-right tabular-nums text-gray-500">{fatAn > 0 ? formatCurrency(fatAn) : '—'}</td>
+                          <td className="px-4 py-2 text-right tabular-nums font-medium">{qtdAt || '—'}</td>
+                          <td className="px-4 py-2 text-right tabular-nums font-medium">{fatAt > 0 ? formatCurrency(fatAt) : '—'}</td>
+                          <td className="px-4 py-2 text-right tabular-nums font-semibold"
+                            style={{ color: varPct == null ? '#9ca3af' : varPct > 0 ? '#16a34a' : varPct < 0 ? '#dc2626' : '#9ca3af' }}>
+                            {sumido ? '−100%' : novo ? 'Novo' : varPct == null ? '—' : `${varPct > 0 ? '+' : ''}${varPct.toFixed(1)}%`}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {/* Linha de total */}
+                    {(() => {
+                      const totQtAt = setoresAtual.reduce((s, r) => s + r.qtd, 0);
+                      const totQtAn = setoresAnt.reduce((s, r) => s + r.qtd, 0);
+                      const totFtAt = setoresAtual.reduce((s, r) => s + r.faturamento, 0);
+                      const totFtAn = setoresAnt.reduce((s, r) => s + r.faturamento, 0);
+                      const vp = totQtAn > 0 ? ((totQtAt - totQtAn) / totQtAn) * 100 : null;
+                      return (
+                        <tr style={{ backgroundColor: NAVY, color: 'white', fontWeight: 700 }}>
+                          <td className="px-4 py-2.5">TOTAL</td>
+                          <td className="px-4 py-2.5 text-right tabular-nums">{totQtAn}</td>
+                          <td className="px-4 py-2.5 text-right tabular-nums">{formatCurrency(totFtAn)}</td>
+                          <td className="px-4 py-2.5 text-right tabular-nums">{totQtAt}</td>
+                          <td className="px-4 py-2.5 text-right tabular-nums">{formatCurrency(totFtAt)}</td>
+                          <td className="px-4 py-2.5 text-right tabular-nums">
+                            {vp == null ? '—' : `${vp > 0 ? '+' : ''}${vp.toFixed(1)}%`}
+                          </td>
+                        </tr>
+                      );
+                    })()}
+                  </tbody>
+                </table>
+              </section>
+            )}
+
+            {/* Seção 6 — Análise automática */}
             <section className="break-avoid">
               <h3 className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: NAVY }}>
                 Análise e Observações

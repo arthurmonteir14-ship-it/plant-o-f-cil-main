@@ -175,11 +175,6 @@ export default function Lancamentos() {
     return Object.entries(map).sort((a, b) => a[1].label.localeCompare(b[1].label));
   }, [filtered]);
 
-  // Expande todos os grupos automaticamente sempre que os dados mudam
-  useEffect(() => {
-    if (grouped.length > 0) setExpandedGroups(new Set(grouped.map(([key]) => key)));
-  }, [grouped]);
-
   const toggleGroup = (key: string) => setExpandedGroups(prev => {
     const s = new Set(prev);
     s.has(key) ? s.delete(key) : s.add(key);
