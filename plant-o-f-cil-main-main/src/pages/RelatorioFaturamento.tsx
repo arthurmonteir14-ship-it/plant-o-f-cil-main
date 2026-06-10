@@ -1,14 +1,16 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
-import { formatCurrency } from '@/lib/format';
+import { formatCurrency, DESCONTO_COTA_PARTE } from '@/lib/format';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ResponsiveContainer, PieChart, Pie, Cell,
 } from 'recharts';
-import { Printer, ArrowLeft, TrendingUp, TrendingDown, Minus } from 'lucide-react';
+import { Printer, ArrowLeft, TrendingUp, TrendingDown, Minus, SlidersHorizontal } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 const NAVY  = '#1a2f5a';
@@ -17,6 +19,18 @@ const BLUE  = '#2563eb';
 const CORES = ['#1a2f5a','#2563eb','#16a34a','#d97706','#dc2626','#7c3aed','#0891b2','#be185d','#059669','#b45309'];
 const MESES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
 const MESES_CURTO = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+
+const INDICADORES_LABELS: Record<string, string> = {
+  faturado:   'Total Faturado',
+  repassado:  'Total Repassado',
+  margem:     'Margem Operacional',
+  pctRepasse: '% de Repasse',
+  cotaParte:  'Cota Parte',
+};
+
+const GRID_COLS: Record<number, string> = {
+  1: 'grid-cols-1', 2: 'grid-cols-2', 3: 'grid-cols-3', 4: 'grid-cols-4', 5: 'grid-cols-5',
+};
 
 interface KpiData    { total_plantoes: number; faturamento: number; repasse: number; }
 interface ClienteRow { hospital_id: string; nome: string; faturamento: number; repasse: number; }
@@ -77,6 +91,16 @@ export default function RelatorioFaturamento() {
   const [setorId,      setSetorId]      = useState(searchParams.get('setor')        ?? '');
   const [setorNome,    setSetorNome]    = useState(searchParams.get('setorNome')    ?? '');
 
+  const [mostrarRepasse] = useState(searchParams.get('mostrarRepasse') !== '0');
+
+  const [indicadoresVisiveis, setIndicadoresVisiveis] = useState<Record<string, boolean>>({
+    faturado:   true,
+    repassado:  searchParams.get('mostrarRepasse') !== '0',
+    margem:     searchParams.get('mostrarRepasse') !== '0',
+    pctRepasse: searchParams.get('mostrarRepasse') !== '0',
+    cotaParte:  searchParams.get('mostrarRepasse') !== '0',
+  });
+
   const [hospitals, setHospitals] = useState<Hospital[]>([]);
   const [sectors,   setSectors]   = useState<Sector[]>([]);
 
@@ -90,6 +114,7 @@ export default function RelatorioFaturamento() {
   const [setoresAnt,    setSetoresAnt]    = useState<SetorRelRow[]>([]);
   const [periodoAnt,    setPeriodoAnt]    = useState({ inicioAnt: '', fimAnt: '' });
   const [loading,       setLoading]       = useState(true);
+  const [cotaParte,     setCotaParte]     = useState(0);
 
   useEffect(() => {
     supabase.from('hospitals').select('id, nome').order('nome').then(({ data }) => setHospitals(data ?? []));
@@ -129,6 +154,28 @@ export default function RelatorioFaturamento() {
         supabase.rpc('relatorio_setores_cliente', { p_inicio: inicioDateAnt, p_fim: fimDateAnt, p_hospital_id: hId, p_setor_id: sId }),
       ] : [Promise.resolve({ data: [] }), Promise.resolve({ data: [] })];
 
+      const fetchCooperadosPlantao = async () => {
+        const PAGE = 1000;
+        let all: { cooperado_id: string; data_plantao: string }[] = [];
+        let from = 0;
+        while (true) {
+          let q = supabase
+            .from('lancamentos_plantoes')
+            .select('cooperado_id, data_plantao')
+            .gte('data_plantao', inicioDate)
+            .lte('data_plantao', fimDate)
+            .range(from, from + PAGE - 1);
+          if (hId) q = q.eq('hospital_id', hId);
+          if (sId) q = q.eq('setor_id', sId);
+          const { data } = await q;
+          const page = data ?? [];
+          all = [...all, ...page];
+          if (page.length < PAGE) break;
+          from += PAGE;
+        }
+        return all;
+      };
+
       const [
         { data: kpiData },
         { data: clienteData },
@@ -138,7 +185,14 @@ export default function RelatorioFaturamento() {
         { data: profAntData },
         { data: setAtualData },
         { data: setAntData },
-      ] = await Promise.all([...basePromises, ...setoresPromises]);
+        cooperadosData,
+      ] = await Promise.all([...basePromises, ...setoresPromises, fetchCooperadosPlantao()]);
+
+      // Cota parte é descontada uma vez por cooperado a cada fechamento (mensal)
+      const cooperadoMesUnicos = new Set(
+        cooperadosData.map(r => `${r.cooperado_id}|${String(r.data_plantao).slice(0, 7)}`)
+      ).size;
+      setCotaParte(cooperadoMesUnicos * DESCONTO_COTA_PARTE);
 
       const k = kpiData?.[0];
       setKpi(k ? {
@@ -320,11 +374,13 @@ export default function RelatorioFaturamento() {
     const periodoAntLabel = labelPeriodoCurto(periodoAnt.inicioAnt, periodoAnt.fimAnt);
 
     const frases: string[] = [
-      `No período analisado, o faturamento total foi de ${formatCurrency(kpi.faturamento)}, com repasse de ${formatCurrency(kpi.repasse)} aos cooperados, resultando em margem operacional de ${formatCurrency(margem)} (${pctRepasse.toFixed(2)}% de repasse sobre o faturamento).`,
+      mostrarRepasse
+        ? `No período analisado, o faturamento total foi de ${formatCurrency(kpi.faturamento)}, com repasse de ${formatCurrency(kpi.repasse)} aos cooperados, resultando em margem operacional de ${formatCurrency(margem)} (${pctRepasse.toFixed(2)}% de repasse sobre o faturamento).`
+        : `No período analisado, o faturamento total foi de ${formatCurrency(kpi.faturamento)}.`,
     ];
     if (maiorFat)  frases.push(`O cliente com maior volume foi ${maiorFat.nome}, representando ${kpi.faturamento > 0 ? ((maiorFat.faturamento / kpi.faturamento) * 100).toFixed(2) : 0}% do faturamento total (${formatCurrency(maiorFat.faturamento)}).`);
-    if (maiorMarg) frases.push(`A maior margem operacional foi registrada em ${maiorMarg.nome}, com ${formatCurrency(maiorMarg.margem)} de diferença entre faturado e repassado.`);
-    if (maiorPct)  frases.push(`O maior percentual de repasse foi de ${maiorPct.pctRepasse.toFixed(2)}%, referente ao cliente ${maiorPct.nome}.`);
+    if (mostrarRepasse && maiorMarg) frases.push(`A maior margem operacional foi registrada em ${maiorMarg.nome}, com ${formatCurrency(maiorMarg.margem)} de diferença entre faturado e repassado.`);
+    if (mostrarRepasse && maiorPct)  frases.push(`O maior percentual de repasse foi de ${maiorPct.pctRepasse.toFixed(2)}%, referente ao cliente ${maiorPct.nome}.`);
 
     // Análise de plantões por categoria
     const totalAtual = totEnfAtual + totTecAtual;
@@ -352,7 +408,7 @@ export default function RelatorioFaturamento() {
     obsSetores.forEach(f => frases.push(f));
 
     return frases;
-  }, [kpi, clientes, clientesComMargem, margem, pctRepasse, totEnfAtual, totTecAtual, totEnfAnt, totTecAnt, varEnf, varTec, periodoAnt, obsProf, obsSetores]);
+  }, [kpi, clientes, clientesComMargem, margem, pctRepasse, totEnfAtual, totTecAtual, totEnfAnt, totTecAnt, varEnf, varTec, periodoAnt, obsProf, obsSetores, mostrarRepasse]);
 
   const periodo  = labelPeriodo(inicio, fim);
   const dataGer  = hoje.toLocaleDateString('pt-BR');
@@ -420,7 +476,28 @@ export default function RelatorioFaturamento() {
             </SelectContent>
           </Select>
         </div>
-        <Button size="sm" className="gap-1.5 ml-auto" onClick={() => window.print()}>
+        <Popover>
+          <PopoverTrigger asChild>
+            <Button variant="outline" size="sm" className="gap-1.5 ml-auto">
+              <SlidersHorizontal className="h-4 w-4" /> Indicadores
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent align="end" className="w-60">
+            <p className="text-xs font-semibold text-muted-foreground mb-2">Indicadores no relatório</p>
+            <div className="space-y-2">
+              {Object.entries(INDICADORES_LABELS).map(([key, label]) => (
+                <label key={key} className="flex items-center gap-2 text-sm cursor-pointer select-none">
+                  <Checkbox
+                    checked={indicadoresVisiveis[key]}
+                    onCheckedChange={v => setIndicadoresVisiveis(prev => ({ ...prev, [key]: v === true }))}
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
+          </PopoverContent>
+        </Popover>
+        <Button size="sm" className="gap-1.5" onClick={() => window.print()}>
           <Printer className="h-4 w-4" /> Imprimir
         </Button>
       </div>
@@ -449,19 +526,25 @@ export default function RelatorioFaturamento() {
               <h3 className="text-xs font-bold uppercase tracking-widest mb-4" style={{ color: NAVY }}>
                 Indicadores Gerais
               </h3>
-              <div className="grid grid-cols-4 gap-4">
-                {[
-                  { label: 'Total Faturado',      value: formatCurrency(kpi?.faturamento ?? 0), color: NAVY  },
-                  { label: 'Total Repassado',     value: formatCurrency(kpi?.repasse     ?? 0), color: GREEN },
-                  { label: 'Margem Operacional',  value: formatCurrency(margem),                color: BLUE  },
-                  { label: '% de Repasse',        value: `${pctRepasse.toFixed(2)}%`,           color: '#d97706' },
-                ].map(card => (
-                  <div key={card.label} className="rounded-xl border p-4" style={{ borderColor: '#e5e7eb' }}>
-                    <p className="text-[10px] uppercase tracking-wider text-gray-400 font-semibold">{card.label}</p>
-                    <p className="text-xl font-bold tabular-nums mt-1" style={{ color: card.color }}>{card.value}</p>
+              {(() => {
+                const cards = [
+                  { key: 'faturado',   label: 'Total Faturado',      value: formatCurrency(kpi?.faturamento ?? 0), color: NAVY  },
+                  { key: 'repassado',  label: 'Total Repassado',     value: formatCurrency(kpi?.repasse     ?? 0), color: GREEN },
+                  { key: 'margem',     label: 'Margem Operacional',  value: formatCurrency(margem),                color: BLUE  },
+                  { key: 'pctRepasse', label: '% de Repasse',        value: `${pctRepasse.toFixed(2)}%`,           color: '#d97706' },
+                  { key: 'cotaParte',  label: 'Cota Parte',          value: formatCurrency(cotaParte),             color: '#7c3aed' },
+                ].filter(card => indicadoresVisiveis[card.key]);
+                return (
+                  <div className={`grid ${GRID_COLS[cards.length] ?? 'grid-cols-1'} gap-4`}>
+                    {cards.map(card => (
+                      <div key={card.key} className="rounded-xl border p-4" style={{ borderColor: '#e5e7eb' }}>
+                        <p className="text-[10px] uppercase tracking-wider text-gray-400 font-semibold">{card.label}</p>
+                        <p className="text-xl font-bold tabular-nums mt-1" style={{ color: card.color }}>{card.value}</p>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
+                );
+              })()}
               <p className="text-xs text-gray-400 mt-3">
                 Total de plantões lançados no período: <strong>{kpi?.total_plantoes ?? 0}</strong>
               </p>
@@ -477,9 +560,9 @@ export default function RelatorioFaturamento() {
                   <tr style={{ backgroundColor: NAVY, color: 'white' }}>
                     <th className="text-left px-4 py-2.5 font-semibold">Cliente</th>
                     <th className="text-right px-4 py-2.5 font-semibold">Valor Faturado</th>
-                    <th className="text-right px-4 py-2.5 font-semibold">Valor Repassado</th>
-                    <th className="text-right px-4 py-2.5 font-semibold">Margem</th>
-                    <th className="text-right px-4 py-2.5 font-semibold">% Repasse</th>
+                    {mostrarRepasse && <th className="text-right px-4 py-2.5 font-semibold">Valor Repassado</th>}
+                    {mostrarRepasse && <th className="text-right px-4 py-2.5 font-semibold">Margem</th>}
+                    {mostrarRepasse && <th className="text-right px-4 py-2.5 font-semibold">% Repasse</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -487,20 +570,22 @@ export default function RelatorioFaturamento() {
                     <tr key={c.hospital_id} style={{ backgroundColor: i % 2 === 0 ? '#f8f9fc' : 'white' }}>
                       <td className="px-4 py-2.5 font-medium">{c.nome}</td>
                       <td className="px-4 py-2.5 text-right tabular-nums">{formatCurrency(c.faturamento)}</td>
-                      <td className="px-4 py-2.5 text-right tabular-nums" style={{ color: GREEN }}>{formatCurrency(c.repasse)}</td>
-                      <td className="px-4 py-2.5 text-right tabular-nums" style={{ color: BLUE }}>{formatCurrency(c.margem)}</td>
-                      <td className="px-4 py-2.5 text-right tabular-nums font-semibold"
-                        style={{ color: c.pctRepasse > 80 ? '#dc2626' : '#374151' }}>
-                        {c.pctRepasse.toFixed(2)}%
-                      </td>
+                      {mostrarRepasse && <td className="px-4 py-2.5 text-right tabular-nums" style={{ color: GREEN }}>{formatCurrency(c.repasse)}</td>}
+                      {mostrarRepasse && <td className="px-4 py-2.5 text-right tabular-nums" style={{ color: BLUE }}>{formatCurrency(c.margem)}</td>}
+                      {mostrarRepasse && (
+                        <td className="px-4 py-2.5 text-right tabular-nums font-semibold"
+                          style={{ color: c.pctRepasse > 80 ? '#dc2626' : '#374151' }}>
+                          {c.pctRepasse.toFixed(2)}%
+                        </td>
+                      )}
                     </tr>
                   ))}
                   <tr style={{ backgroundColor: NAVY, color: 'white', fontWeight: 700 }}>
                     <td className="px-4 py-2.5">TOTAL GERAL</td>
                     <td className="px-4 py-2.5 text-right tabular-nums">{formatCurrency(kpi?.faturamento ?? 0)}</td>
-                    <td className="px-4 py-2.5 text-right tabular-nums">{formatCurrency(kpi?.repasse ?? 0)}</td>
-                    <td className="px-4 py-2.5 text-right tabular-nums">{formatCurrency(margem)}</td>
-                    <td className="px-4 py-2.5 text-right tabular-nums">{pctRepasse.toFixed(2)}%</td>
+                    {mostrarRepasse && <td className="px-4 py-2.5 text-right tabular-nums">{formatCurrency(kpi?.repasse ?? 0)}</td>}
+                    {mostrarRepasse && <td className="px-4 py-2.5 text-right tabular-nums">{formatCurrency(margem)}</td>}
+                    {mostrarRepasse && <td className="px-4 py-2.5 text-right tabular-nums">{pctRepasse.toFixed(2)}%</td>}
                   </tr>
                 </tbody>
               </table>
@@ -527,7 +612,7 @@ export default function RelatorioFaturamento() {
                         />
                         <Legend wrapperStyle={{ fontSize: 11 }} />
                         <Bar dataKey="faturamento" name="Faturado"   fill={NAVY}  radius={[3,3,0,0]} />
-                        <Bar dataKey="repasse"      name="Repassado" fill={GREEN} radius={[3,3,0,0]} />
+                        {mostrarRepasse && <Bar dataKey="repasse" name="Repassado" fill={GREEN} radius={[3,3,0,0]} />}
                       </BarChart>
                     </ResponsiveContainer>
                   </div>

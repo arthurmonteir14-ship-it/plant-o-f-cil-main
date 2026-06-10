@@ -1,6 +1,9 @@
 export const formatCurrency = (value: number | null | undefined) =>
   new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(Number(value ?? 0));
 
+/** Valor fixo de cota-parte cooperativa descontado por cooperado a cada fechamento. */
+export const DESCONTO_COTA_PARTE = 80;
+
 export const formatDate = (value: string | Date) => {
   const date = typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)
     ? new Date(value + 'T00:00:00')

@@ -10,7 +10,7 @@ import { Badge } from '@/components/ui/badge';
 import {
   Download, FileText, Eye, Send, CheckCircle, AlertCircle, Clock, RefreshCw, SendHorizonal, X, Receipt, Lock, Unlock,
 } from 'lucide-react';
-import { formatCurrency, profissaoLabel, tipoPlantaoLabel } from '@/lib/format';
+import { formatCurrency, profissaoLabel, tipoPlantaoLabel, DESCONTO_COTA_PARTE } from '@/lib/format';
 import { exportarRelatorioExcel } from '@/lib/exportExcel';
 import { PeriodoPicker } from '@/components/PeriodoPicker';
 import { calcPeriodo, periodoInicial, PeriodoState } from '@/lib/periodo';
@@ -51,7 +51,6 @@ interface CompetenciaFechada {
 // ─── Constantes RPA ───────────────────────────────────────────────────────────
 
 const PERCENTUAL_INSS = 0.20;
-const DESCONTO_COTA_PARTE = 80;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 

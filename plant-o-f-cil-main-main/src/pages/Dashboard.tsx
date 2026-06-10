@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Plus, ListChecks, Wallet, HandCoins, Clock, BarChart2, CalendarDays, TrendingUp, TrendingDown, Printer } from 'lucide-react';
 import { formatCurrency, formatDate, profissaoLabel } from '@/lib/format';
 import { StatusBadge } from '@/components/StatusBadge';
@@ -141,6 +142,9 @@ export default function Dashboard() {
   // ── Modo: individual por mês ou comparação ────────────────────────────────
   const [modoComparacao, setModoComparacao] = useState(false);
 
+  // ── Exibir valores de repasse (cota parte) no relatório impresso ──────────
+  const [mostrarRepasse, setMostrarRepasse] = useState(true);
+
   // helper — atalho de período
   const aplicarAtalho = (meses: number) => {
     const d = new Date(hoje.getFullYear(), hoje.getMonth() - (meses - 1), 1);
@@ -263,11 +267,16 @@ export default function Dashboard() {
                     const params = new URLSearchParams({ inicio: periodoInicio, fim: periodoFim });
                     if (filtroHospital !== '__todos__') { params.set('hospital', filtroHospital); params.set('hospitalNome', hospitalNome); }
                     if (filtroSetor    !== '__todos__') { params.set('setor',    filtroSetor);    params.set('setorNome',    setorNome); }
+                    if (!mostrarRepasse) params.set('mostrarRepasse', '0');
                     window.open(`/relatorio-faturamento?${params}`, '_blank');
                   }}
                 >
                   <Printer className="h-3.5 w-3.5" /> Imprimir Relatório
                 </Button>
+                <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
+                  <Checkbox checked={mostrarRepasse} onCheckedChange={v => setMostrarRepasse(v === true)} />
+                  Exibir repasse / cota parte
+                </label>
               <Button
                   size="sm"
                   variant={modoComparacao ? 'default' : 'outline'}
