@@ -49,6 +49,7 @@ const CAMPOS_EXPORT = [
   { key: 'registro_profissional', label: 'Registro Profissional' },
   { key: 'data_adesao',           label: 'Data de Adesão' },
   { key: 'status',                label: 'Status' },
+  { key: 'cep',                   label: 'CEP' },
   { key: 'endereco',              label: 'Endereço Completo' },
   { key: 'estado_civil',          label: 'Estado Civil' },
   { key: 'sexo',                  label: 'Sexo' },
@@ -94,6 +95,7 @@ function getValorCampo(r: Cooperado, key: CampoKey): string {
     case 'registro_profissional': return r.registro_profissional ?? '—';
     case 'data_adesao':           return fmtData(r.data_adesao);
     case 'status':                return r.ativo ? 'Ativo' : 'Inativo';
+    case 'cep':                   return r.cep ? r.cep.replace(/(\d{5})(\d{3})/, '$1-$2') : '—';
     case 'endereco': {
       const parts = [r.logradouro, r.numero, r.complemento, r.bairro, r.cidade, r.estado_uf].filter(Boolean);
       return parts.length ? parts.join(', ') : '—';
@@ -162,7 +164,7 @@ export default function CadastroCooperado() {
     profissao: true, cpf: true, rg: false, pis_inss: false,
     data_nascimento: true, municipio_nascimento: false, escolaridade: false,
     telefone: true, email: true,
-    registro_profissional: false, data_adesao: false, status: true, endereco: false,
+    registro_profissional: false, data_adesao: false, status: true, cep: true, endereco: false,
     estado_civil: false, sexo: false, raca_cor: false, banco: false, pix: false,
   });
   const [editId, setEditId] = useState<string | null>(null);
