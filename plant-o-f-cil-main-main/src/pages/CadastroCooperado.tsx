@@ -22,8 +22,9 @@ import { Checkbox } from '@/components/ui/checkbox';
 
 interface Cooperado {
   id: string; nome: string; cpf: string | null; data_nascimento: string | null;
+  municipio_nascimento: string | null; escolaridade: string | null;
   telefone: string | null; email: string | null; profissao: string;
-  registro_profissional: string | null; ativo: boolean;
+  registro_profissional: string | null; data_adesao: string | null; ativo: boolean;
   rg: string | null; pis_inss: string | null;
   banco: string | null; agencia: string | null; conta: string | null;
   tipo_conta: string | null; pix: string | null; observacoes: string | null;
@@ -41,9 +42,12 @@ const CAMPOS_EXPORT = [
   { key: 'rg',                    label: 'RG' },
   { key: 'pis_inss',              label: 'PIS / INSS' },
   { key: 'data_nascimento',       label: 'Data de Nascimento' },
+  { key: 'municipio_nascimento',  label: 'Município de Nascimento' },
+  { key: 'escolaridade',          label: 'Escolaridade' },
   { key: 'telefone',              label: 'Telefone' },
   { key: 'email',                 label: 'E-mail' },
   { key: 'registro_profissional', label: 'Registro Profissional' },
+  { key: 'data_adesao',           label: 'Data de Adesão' },
   { key: 'status',                label: 'Status' },
   { key: 'endereco',              label: 'Endereço Completo' },
   { key: 'estado_civil',          label: 'Estado Civil' },
@@ -66,6 +70,13 @@ const racaCorLabel: Record<string, string> = {
   branca: 'Branca', preta: 'Preta', parda: 'Parda',
   amarela: 'Amarela', indigena: 'Indígena', nao_informado: 'Não informado',
 };
+const escolaridadeLabel: Record<string, string> = {
+  fundamental_incompleto: 'Fundamental incompleto', fundamental_completo: 'Fundamental completo',
+  medio_incompleto: 'Médio incompleto', medio_completo: 'Médio completo',
+  superior_incompleto: 'Superior incompleto', superior_completo: 'Superior completo',
+  pos_graduacao: 'Pós-graduação',
+};
+const escolaridadeOptions = Object.entries(escolaridadeLabel) as [string, string][];
 
 const fmtData = (s: string | null) => s ? s.split('-').reverse().join('/') : '—';
 
@@ -76,9 +87,12 @@ function getValorCampo(r: Cooperado, key: CampoKey): string {
     case 'rg':                    return r.rg ?? '—';
     case 'pis_inss':              return r.pis_inss ?? '—';
     case 'data_nascimento':       return fmtData(r.data_nascimento);
+    case 'municipio_nascimento':  return r.municipio_nascimento ?? '—';
+    case 'escolaridade':          return escolaridadeLabel[r.escolaridade ?? ''] ?? '—';
     case 'telefone':              return r.telefone ?? '—';
     case 'email':                 return r.email ?? '—';
     case 'registro_profissional': return r.registro_profissional ?? '—';
+    case 'data_adesao':           return fmtData(r.data_adesao);
     case 'status':                return r.ativo ? 'Ativo' : 'Inativo';
     case 'endereco': {
       const parts = [r.logradouro, r.numero, r.complemento, r.bairro, r.cidade, r.estado_uf].filter(Boolean);
@@ -127,8 +141,9 @@ const validarCPF = (cpf: string): boolean => {
 };
 
 const emptyForm = {
-  nome: '', cpf: '', data_nascimento: '', telefone: '', email: '',
-  profissao: 'enfermeiro', registro_profissional: '', ativo: true,
+  nome: '', cpf: '', data_nascimento: '', municipio_nascimento: '', escolaridade: '',
+  telefone: '', email: '',
+  profissao: 'enfermeiro', registro_profissional: '', data_adesao: '', ativo: true,
   rg: '', pis_inss: '',
   banco: '', agencia: '', conta: '', tipo_conta: 'corrente', pix: '',
   observacoes: '',
@@ -145,8 +160,9 @@ export default function CadastroCooperado() {
   const [modalExport, setModalExport] = useState(false);
   const [camposSel, setCamposSel] = useState<Record<CampoKey, boolean>>({
     profissao: true, cpf: true, rg: false, pis_inss: false,
-    data_nascimento: true, telefone: true, email: true,
-    registro_profissional: false, status: true, endereco: false,
+    data_nascimento: true, municipio_nascimento: false, escolaridade: false,
+    telefone: true, email: true,
+    registro_profissional: false, data_adesao: false, status: true, endereco: false,
     estado_civil: false, sexo: false, raca_cor: false, banco: false, pix: false,
   });
   const [editId, setEditId] = useState<string | null>(null);
@@ -184,8 +200,10 @@ export default function CadastroCooperado() {
     setEditId(r.id);
     setForm({
       nome: r.nome, cpf: r.cpf ?? '', data_nascimento: r.data_nascimento ?? '',
+      municipio_nascimento: r.municipio_nascimento ?? '', escolaridade: r.escolaridade ?? '',
       telefone: r.telefone ?? '', email: r.email ?? '',
       profissao: r.profissao, registro_profissional: r.registro_profissional ?? '',
+      data_adesao: r.data_adesao ?? '',
       ativo: r.ativo,
       rg: r.rg ?? '', pis_inss: r.pis_inss ?? '',
       banco: r.banco ?? '', agencia: r.agencia ?? '', conta: r.conta ?? '',
@@ -231,10 +249,13 @@ export default function CadastroCooperado() {
       nome: toTitleCase(form.nome),
       cpf: form.cpf.replace(/\D/g, '') || null,
       data_nascimento: form.data_nascimento || null,
+      municipio_nascimento: form.municipio_nascimento.trim() || null,
+      escolaridade: form.escolaridade || null,
       telefone: form.telefone.trim() || null,
       email: form.email.trim() || null,
       profissao: form.profissao as 'enfermeiro' | 'enfermeiro_rt' | 'tecnico_enfermagem' | 'fonoaudiologo' | 'assistente_social',
       registro_profissional: form.registro_profissional.trim() || null,
+      data_adesao: form.data_adesao || null,
       ativo: form.ativo,
       rg: form.rg.trim() || null,
       pis_inss: form.pis_inss.trim() || null,
@@ -489,6 +510,21 @@ export default function CadastroCooperado() {
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
+                  <Label>Município de nascimento</Label>
+                  <Input value={form.municipio_nascimento} onChange={e => f('municipio_nascimento', e.target.value)} placeholder="Ex.: Vitória - ES" />
+                </div>
+                <div>
+                  <Label>Escolaridade</Label>
+                  <Select value={form.escolaridade} onValueChange={v => f('escolaridade', v)}>
+                    <SelectTrigger><SelectValue placeholder="Selecione" /></SelectTrigger>
+                    <SelectContent>
+                      {escolaridadeOptions.map(([v, l]) => <SelectItem key={v} value={v}>{l}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
                   <Label>Telefone</Label>
                   <Input value={form.telefone} onChange={e => f('telefone', e.target.value)} placeholder="(11) 99999-0000" />
                 </div>
@@ -598,6 +634,10 @@ export default function CadastroCooperado() {
               <div>
                 <Label>COREN / Registro profissional</Label>
                 <Input value={form.registro_profissional} onChange={e => f('registro_profissional', e.target.value)} placeholder="COREN-SP 123456" />
+              </div>
+              <div>
+                <Label>Data de adesão</Label>
+                <Input type="date" value={form.data_adesao} onChange={e => f('data_adesao', e.target.value)} />
               </div>
               <div>
                 <Label>Status</Label>
