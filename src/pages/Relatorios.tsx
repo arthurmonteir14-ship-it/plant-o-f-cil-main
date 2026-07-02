@@ -156,6 +156,70 @@ function gerarPDFFaturamento(rows: LancRow[], periodoLabel: string, filtros: Rec
     startY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
   });
 
+  // ── Extrato Financeiro ──
+  const PH = doc.internal.pageSize.getHeight();
+  if (startY > PH - 90) { doc.addPage(); startY = 14; } else { startY += 6; }
+
+  doc.setFillColor(31, 41, 99);
+  doc.rect(14, startY, W - 28, 8, 'F');
+  doc.setTextColor(255, 255, 255);
+  doc.setFontSize(9); doc.setFont('helvetica', 'bold');
+  doc.text('EXTRATO FINANCEIRO', 17, startY + 5.5);
+  doc.setFontSize(7); doc.setFont('helvetica', 'normal');
+  doc.text('Demonstrativo financeiro da competência de faturamento', W - 15, startY + 5.5, { align: 'right' });
+  startY += 12;
+
+  const exVB = rows.reduce((s, r) => s + Number(r.valor_cobrado_cliente), 0);
+  const exPIS = exVB * 0.0065;
+  const exCOFINS = exVB * 0.03;
+  const exRetido = exVB * 0.0365;
+  const exLiquido = exVB - exRetido;
+  const exRepasse = rows.reduce((s, r) => s + Number(r.valor_repasse_cooperado), 0);
+  const repByCoop = new Map<string, number>();
+  rows.forEach(r => { const id = r.cooperados?.id ?? '_'; repByCoop.set(id, (repByCoop.get(id) ?? 0) + Number(r.valor_repasse_cooperado)); });
+  const exINSS = [...repByCoop.values()].reduce((s, v) => s + v * 0.20, 0);
+  const exNCoop = repByCoop.size;
+  const exCota = exNCoop * 80;
+
+  const midX = W / 2 + 1;
+  const extratoStartY = startY;
+
+  autoTable(doc, {
+    startY: extratoStartY,
+    margin: { left: 14, right: W - midX + 2 },
+    head: [['Demonstrativo da Nota Fiscal', 'Valor']],
+    body: [
+      ['Valor Bruto da Nota Fiscal', fmtBRL(exVB)],
+      ['(−) PIS (0,65%)', fmtBRL(exPIS)],
+      ['(−) COFINS (3,00%)', fmtBRL(exCOFINS)],
+      ['(=) Total das Contribuições Sociais Retidas (3,65%)', fmtBRL(exRetido)],
+    ],
+    foot: [['(=) Valor Líquido a Receber', fmtBRL(exLiquido)]],
+    styles: { fontSize: 7.5, cellPadding: 2.5 },
+    headStyles: { fillColor: [31, 41, 99], textColor: 255, fontStyle: 'bold' },
+    footStyles: { fillColor: [224, 235, 255], textColor: [31, 41, 99], fontStyle: 'bold' },
+    alternateRowStyles: { fillColor: [248, 249, 252] },
+    columnStyles: { 1: { halign: 'right' } },
+  });
+  const b1End = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY;
+
+  autoTable(doc, {
+    startY: extratoStartY,
+    margin: { left: midX, right: 14 },
+    head: [['Resumo da Competência', 'Valor']],
+    body: [
+      ['Valor Total de Repasse aos Cooperados', fmtBRL(exRepasse)],
+      ['Total do INSS Patronal (20%)', fmtBRL(exINSS)],
+      [`Cota-Parte Arrecadada (${exNCoop} coop. × R$ 80,00)`, fmtBRL(exCota)],
+    ],
+    styles: { fontSize: 7.5, cellPadding: 2.5 },
+    headStyles: { fillColor: [31, 41, 99], textColor: 255, fontStyle: 'bold' },
+    bodyStyles: { fillColor: [224, 235, 255], textColor: [31, 41, 99], fontStyle: 'bold' },
+    columnStyles: { 1: { halign: 'right' } },
+  });
+  const b2End = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY;
+  startY = Math.max(b1End, b2End);
+
   gerarPDFFooter(doc);
   doc.save(`faturamento_${periodoLabel.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`);
 }
@@ -341,6 +405,15 @@ export default function Relatorios() {
       };
     }).sort((a, b) => ordenacao === 'nome' ? a.nome.localeCompare(b.nome) : b.totalCliente - a.totalCliente);
   }, [filtered, ordenacao]);
+
+  const extratoValorBruto = totalCliente;
+  const extratoPIS = extratoValorBruto * 0.0065;
+  const extratoCOFINS = extratoValorBruto * 0.03;
+  const extratoTotalRetido = extratoValorBruto * 0.0365;
+  const extratoValorLiquido = extratoValorBruto - extratoTotalRetido;
+  const extratoRepasseTotal = totalCooperado;
+  const extratoINSSPatronal = cooperadosCards.reduce((s, c) => s + c.totalRepasse * 0.20, 0);
+  const extratoCotaParte = cooperadosAtivos * 80;
 
   const toggleCard = (key: string) => setExpandedCards(prev => {
     const s = new Set(prev); s.has(key) ? s.delete(key) : s.add(key); return s;
@@ -681,6 +754,78 @@ export default function Relatorios() {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* ── Extrato Financeiro ── */}
+      {!loading && filtered.length > 0 && (
+        <div className="space-y-4 pt-4 border-t border-border/50">
+          <div>
+            <h2 className="text-lg font-bold">Extrato Financeiro</h2>
+            <p className="text-sm text-muted-foreground">Demonstrativo financeiro da competência de faturamento</p>
+          </div>
+          <div className="grid gap-4 md:grid-cols-2">
+            <Card>
+              <CardContent className="p-0">
+                <div className="px-4 py-3 bg-[#F8FAFC] dark:bg-muted/20 border-b">
+                  <p className="text-[13px] font-semibold">Demonstrativo da Nota Fiscal</p>
+                </div>
+                <table className="w-full text-sm">
+                  <tbody className="divide-y">
+                    <tr>
+                      <td className="px-4 py-2.5 text-muted-foreground text-[13px]">Valor Bruto da Nota Fiscal</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums font-medium">{fmtBRL(extratoValorBruto)}</td>
+                    </tr>
+                    <tr>
+                      <td className="px-4 py-2.5 text-muted-foreground text-[13px]">(−) PIS (0,65%)</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums text-red-500">{fmtBRL(extratoPIS)}</td>
+                    </tr>
+                    <tr>
+                      <td className="px-4 py-2.5 text-muted-foreground text-[13px]">(−) COFINS (3,00%)</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums text-red-500">{fmtBRL(extratoCOFINS)}</td>
+                    </tr>
+                    <tr className="bg-red-50 dark:bg-red-950/20">
+                      <td className="px-4 py-2.5 text-[13px] font-medium">(=) Total das Contribuições Sociais Retidas (3,65%)</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums font-semibold text-red-600">{fmtBRL(extratoTotalRetido)}</td>
+                    </tr>
+                    <tr className="bg-[#EFF6FF] dark:bg-primary/10">
+                      <td className="px-4 py-3 text-[13px] font-bold text-primary">(=) Valor Líquido a Receber</td>
+                      <td className="px-4 py-3 text-right tabular-nums font-bold text-primary text-[15px]">{fmtBRL(extratoValorLiquido)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardContent className="p-0">
+                <div className="px-4 py-3 bg-[#F8FAFC] dark:bg-muted/20 border-b">
+                  <p className="text-[13px] font-semibold">Resumo da Competência</p>
+                </div>
+                <table className="w-full text-sm">
+                  <tbody className="divide-y">
+                    <tr className="bg-[#EFF6FF] dark:bg-primary/10">
+                      <td className="px-4 py-3 text-[13px] font-bold text-primary">Valor Total de Repasse aos Cooperados</td>
+                      <td className="px-4 py-3 text-right tabular-nums font-bold text-primary text-[15px]">{fmtBRL(extratoRepasseTotal)}</td>
+                    </tr>
+                    <tr className="bg-[#EFF6FF] dark:bg-primary/10">
+                      <td className="px-4 py-3 text-[13px] font-bold text-primary">Total do INSS Patronal (20%)</td>
+                      <td className="px-4 py-3 text-right tabular-nums font-bold text-primary text-[15px]">{fmtBRL(extratoINSSPatronal)}</td>
+                    </tr>
+                    <tr className="bg-[#EFF6FF] dark:bg-primary/10">
+                      <td className="px-4 py-3 text-[13px] font-bold text-primary">
+                        Valor Total da Cota-Parte Arrecadada
+                        <span className="ml-2 text-xs font-normal text-muted-foreground">
+                          ({cooperadosAtivos} cooperado{cooperadosAtivos !== 1 ? 's' : ''} × R$ 80,00)
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-right tabular-nums font-bold text-primary text-[15px]">{fmtBRL(extratoCotaParte)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </CardContent>
+            </Card>
+          </div>
         </div>
       )}
     </div>
