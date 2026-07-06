@@ -1,0 +1,647 @@
+import { useEffect, useState, useMemo } from 'react';
+import { Link } from 'react-router-dom';
+import { supabase } from '@/integrations/supabase/client';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Plus, ListChecks, Wallet, HandCoins, Clock, BarChart2, CalendarDays, TrendingUp, TrendingDown, Printer, FileSpreadsheet } from 'lucide-react';
+import { formatCurrency, formatDate, profissaoLabel } from '@/lib/format';
+import { StatusBadge } from '@/components/StatusBadge';
+import { useAuth } from '@/hooks/useAuth';
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
+  LineChart, Line, PieChart, Pie, Cell,
+} from 'recharts';
+
+// ── Interfaces ─────────────────────────────────────────────────────────────────
+
+interface KPI { totalPlantoes: number; faturamento: number; repasse: number; pendentes: number; }
+interface RecentRow {
+  id: string; data_plantao: string; valor_cobrado_cliente: number; status: string;
+  cooperados: { nome: string; profissao: string } | null;
+  hospitals: { nome: string } | null;
+  sectors: { nome: string } | null;
+}
+interface RpcMensal    { ano_mes: string; faturamento: number; repasse: number; plantoes: number; }
+interface RpcCliente   { hospital_id: string; nome: string; faturamento: number; }
+interface RpcSetor     { setor_id: string; nome: string; faturamento: number; }
+interface RpcCategoria { ano_mes: string; enfermeiros: number; tecnicos: number; }
+interface Hospital { id: string; nome: string; }
+interface Sector   { id: string; nome: string; hospital_id: string; }
+
+// ── Cores dos gráficos ─────────────────────────────────────────────────────────
+
+const NAVY   = '#1a2f5a';
+const BLUE   = '#2563eb';
+const GREEN  = '#16a34a';
+const CORES_PIZZA = ['#1a2f5a','#2563eb','#16a34a','#d97706','#dc2626','#7c3aed','#0891b2','#be185d','#059669','#b45309'];
+
+const fmtK = (v: number) =>
+  v >= 1000 ? `R$${(v / 1000).toFixed(0)}k` : formatCurrency(v);
+
+const MESES = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+
+// ── Componente ─────────────────────────────────────────────────────────────────
+
+export default function Dashboard() {
+  const { hasFinanceiroAccess } = useAuth();
+
+  // ── Estado existente ──
+  const [kpi, setKpi] = useState<KPI>({ totalPlantoes: 0, faturamento: 0, repasse: 0, pendentes: 0 });
+  const [recents, setRecents] = useState<RecentRow[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  // ── Estado dos gráficos ──
+  const [dadosMensaisRpc,    setDadosMensaisRpc]    = useState<RpcMensal[]>([]);
+  const [dadosPorClienteRpc, setDadosPorClienteRpc] = useState<RpcCliente[]>([]);
+  const [dadosPorSetorRpc,   setDadosPorSetorRpc]   = useState<RpcSetor[]>([]);
+  const [dadosCategoriaRpc,  setDadosCategoriaRpc]  = useState<RpcCategoria[]>([]);
+  const [hospitals, setHospitals] = useState<Hospital[]>([]);
+  const [sectors, setSectors]     = useState<Sector[]>([]);
+  const [loadingChart, setLoadingChart] = useState(true);
+  const [filtroHospital, setFiltroHospital] = useState('__todos__');
+  const [filtroSetor, setFiltroSetor]       = useState('__todos__');
+
+  // Período do gráfico — De/Até (YYYY-MM)
+  const hoje = new Date();
+  const mesAtual   = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}`;
+  const mes12atras = (() => {
+    const d = new Date(hoje.getFullYear(), hoje.getMonth() - 11, 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  })();
+  const [periodoInicio, setPeriodoInicio] = useState(mes12atras);
+  const [periodoFim,    setPeriodoFim]    = useState(mesAtual);
+
+  // ── Busca dados existentes do mês atual ────────────────────────────────────
+  useEffect(() => {
+    if (!hasFinanceiroAccess()) { setLoading(false); return; }
+    (async () => {
+      const today = new Date();
+      const inicioMes = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
+      const fimMes    = new Date(today.getFullYear(), today.getMonth() + 1, 0).toISOString().slice(0, 10);
+
+      const { data: kpiData } = await supabase
+        .rpc('dashboard_kpi', { p_inicio: inicioMes, p_fim: fimMes });
+
+      const kpiRow        = kpiData?.[0];
+      const totalPlantoes = Number(kpiRow?.total_plantoes ?? 0);
+      const faturamento   = Number(kpiRow?.faturamento ?? 0);
+      const repasse       = Number(kpiRow?.repasse ?? 0);
+      const pendentes     = 0;
+
+      const { data: rec } = await supabase
+        .from('lancamentos_plantoes')
+        .select('id, data_plantao, valor_cobrado_cliente, status, cooperados(nome, profissao), hospitals(nome), sectors(nome)')
+        .order('created_at', { ascending: false })
+        .limit(6);
+
+      setKpi({ totalPlantoes, faturamento, repasse, pendentes });
+      setRecents((rec ?? []) as unknown as RecentRow[]);
+      setLoading(false);
+    })();
+  }, [hasFinanceiroAccess]);
+
+  // ── Busca dados dos gráficos (período selecionado) ────────────────────────
+  useEffect(() => {
+    if (!hasFinanceiroAccess()) return;
+    (async () => {
+      setLoadingChart(true);
+      const inicio = `${periodoInicio}-01`;
+      const [anoFim, mesFimN] = periodoFim.split('-').map(Number);
+      const fim = new Date(anoFim, mesFimN, 0).toISOString().slice(0, 10); // último dia do mês fim
+
+      const hospId  = filtroHospital === '__todos__' ? null : filtroHospital;
+      const setorId = filtroSetor   === '__todos__' ? null : filtroSetor;
+
+      const [{ data: mensal }, { data: porCliente }, { data: porSetor }, { data: categoria }, { data: hosp }, { data: sects }] = await Promise.all([
+        supabase.rpc('dashboard_mensal',               { p_inicio: inicio, p_fim: fim, p_hospital_id: hospId, p_setor_id: setorId }),
+        supabase.rpc('dashboard_por_cliente',          { p_inicio: inicio, p_fim: fim, p_setor_id: setorId }),
+        supabase.rpc('dashboard_por_setor',            { p_inicio: inicio, p_fim: fim, p_hospital_id: hospId }),
+        supabase.rpc('dashboard_plantoes_por_categoria', { p_inicio: inicio, p_fim: fim, p_hospital_id: hospId, p_setor_id: setorId }),
+        supabase.from('hospitals').select('id, nome').order('nome'),
+        supabase.from('sectors').select('id, nome, hospital_id').eq('ativo', true).order('nome'),
+      ]);
+
+      setDadosMensaisRpc(mensal ?? []);
+      setDadosPorClienteRpc(porCliente ?? []);
+      setDadosPorSetorRpc(porSetor ?? []);
+      setDadosCategoriaRpc((categoria ?? []) as RpcCategoria[]);
+      setHospitals(hosp ?? []);
+      setSectors((sects ?? []) as Sector[]);
+      setLoadingChart(false);
+    })();
+  }, [hasFinanceiroAccess, periodoInicio, periodoFim, filtroHospital, filtroSetor]);
+
+  // ── Dropdown de setores filtrado por hospital ──────────────────────────────
+  const setoresFiltro = useMemo(() =>
+    filtroHospital === '__todos__' ? sectors : sectors.filter(s => s.hospital_id === filtroHospital),
+  [sectors, filtroHospital]);
+
+  // ── Modo: individual por mês ou comparação ────────────────────────────────
+  const [modoComparacao, setModoComparacao] = useState(false);
+
+  // ── Exibir valores de repasse (cota parte) no relatório impresso ──────────
+  const [mostrarRepasse, setMostrarRepasse] = useState(true);
+
+  // helper — atalho de período
+  const aplicarAtalho = (meses: number) => {
+    const d = new Date(hoje.getFullYear(), hoje.getMonth() - (meses - 1), 1);
+    setPeriodoInicio(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+    setPeriodoFim(mesAtual);
+  };
+
+  // ── Gráfico 1: Faturamento mensal (barras) ─────────────────────────────────
+  const dadosMensais = useMemo(() => {
+    const mapa: Record<string, { mes: string; faturamento: number; repasse: number; plantoes: number }> = {};
+    const [anoI, mesI] = periodoInicio.split('-').map(Number);
+    const [anoF, mesF] = periodoFim.split('-').map(Number);
+    let ano = anoI; let mes = mesI;
+    while (ano < anoF || (ano === anoF && mes <= mesF)) {
+      const key = `${ano}-${String(mes).padStart(2, '0')}`;
+      mapa[key] = { mes: `${MESES[mes - 1]}/${String(ano).slice(2)}`, faturamento: 0, repasse: 0, plantoes: 0 };
+      mes++; if (mes > 12) { mes = 1; ano++; }
+    }
+    dadosMensaisRpc.forEach(r => {
+      if (mapa[r.ano_mes]) {
+        mapa[r.ano_mes].faturamento = Number(r.faturamento);
+        mapa[r.ano_mes].repasse     = Number(r.repasse);
+        mapa[r.ano_mes].plantoes    = Number(r.plantoes);
+      }
+    });
+    return Object.values(mapa);
+  }, [dadosMensaisRpc, periodoInicio, periodoFim]);
+
+  // ── Gráfico 2: Por cliente (pizza) ────────────────────────────────────────
+  const dadosPorCliente = useMemo(() =>
+    dadosPorClienteRpc.map(r => ({ nome: r.nome, valor: Number(r.faturamento) })),
+  [dadosPorClienteRpc]);
+
+  // ── Gráfico 3: Por setor (barras horizontais) ─────────────────────────────
+  const dadosPorSetor = useMemo(() =>
+    dadosPorSetorRpc.map(r => ({ nome: r.nome, valor: Number(r.faturamento) })),
+  [dadosPorSetorRpc]);
+
+  // ── Gráfico 5: Plantões por categoria (Enfermeiro vs Técnico) ──────────────
+  const dadosCategoria = useMemo(() => {
+    const mapa: Record<string, { mes: string; enfermeiros: number; tecnicos: number }> = {};
+    const [anoI, mesI] = periodoInicio.split('-').map(Number);
+    const [anoF, mesF] = periodoFim.split('-').map(Number);
+    let ano = anoI; let mes = mesI;
+    while (ano < anoF || (ano === anoF && mes <= mesF)) {
+      const key = `${ano}-${String(mes).padStart(2, '0')}`;
+      mapa[key] = { mes: `${MESES[mes - 1]}/${String(ano).slice(2)}`, enfermeiros: 0, tecnicos: 0 };
+      mes++; if (mes > 12) { mes = 1; ano++; }
+    }
+    dadosCategoriaRpc.forEach(r => {
+      if (mapa[r.ano_mes]) {
+        mapa[r.ano_mes].enfermeiros = Number(r.enfermeiros);
+        mapa[r.ano_mes].tecnicos    = Number(r.tecnicos);
+      }
+    });
+    return Object.values(mapa);
+  }, [dadosCategoriaRpc, periodoInicio, periodoFim]);
+
+  // ── KPI cards (existentes) ─────────────────────────────────────────────────
+  const cards = [
+    { label: 'Plantões no mês',       value: kpi.totalPlantoes,              icon: ListChecks, color: 'text-primary', bg: 'bg-primary-soft' },
+    { label: 'Faturamento previsto',   value: formatCurrency(kpi.faturamento), icon: Wallet,     color: 'text-accent',   bg: 'bg-accent-soft' },
+    { label: 'Repasse aos cooperados', value: formatCurrency(kpi.repasse),    icon: HandCoins,  color: 'text-success',  bg: 'bg-success/10' },
+  ];
+
+  const tooltipStyle = { backgroundColor: '#fff', border: '1px solid #e5e7eb', borderRadius: 6, fontSize: 12 };
+
+  return (
+    <div className="space-y-6">
+      {/* Cabeçalho existente */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-2xl md:text-3xl font-bold">Visão geral</h1>
+          <p className="text-sm text-muted-foreground">Acompanhe os indicadores do mês corrente</p>
+        </div>
+        {hasFinanceiroAccess() && (
+          <Button asChild className="gap-2">
+            <Link to="/financeiro/lancamentos/novo"><Plus className="h-4 w-4" /> Novo lançamento</Link>
+          </Button>
+        )}
+      </div>
+
+      {!hasFinanceiroAccess() ? (
+        <Card><CardContent className="p-8 text-center text-muted-foreground">
+          Seu perfil não tem acesso ao módulo Financeiro.
+        </CardContent></Card>
+      ) : (
+        <>
+          {/* KPI cards existentes */}
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+            {cards.map(c => (
+              <Card key={c.label} className="shadow-card">
+                <CardContent className="p-5">
+                  <div className="flex items-center gap-4">
+                    <div className={`flex h-12 w-12 items-center justify-center rounded-xl ${c.bg} ${c.color}`}>
+                      <c.icon className="h-6 w-6" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-xs uppercase tracking-wider text-muted-foreground">{c.label}</p>
+                      <p className="text-2xl font-bold tabular-nums truncate">{loading ? '—' : c.value}</p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+
+          {/* ── SEÇÃO DE GRÁFICOS ── */}
+          <div>
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+              <div className="flex items-center gap-3">
+                <h2 className="text-lg font-bold">Faturamento — Análise Gráfica</h2>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="gap-1.5 h-8 text-xs"
+                  onClick={() => {
+                    const hospitalNome = filtroHospital === '__todos__' ? '' : (hospitals.find(h => h.id === filtroHospital)?.nome ?? '');
+                    const setorNome    = filtroSetor    === '__todos__' ? '' : (sectors.find(s => s.id === filtroSetor)?.nome ?? '');
+                    const params = new URLSearchParams({ inicio: periodoInicio, fim: periodoFim });
+                    if (filtroHospital !== '__todos__') { params.set('hospital', filtroHospital); params.set('hospitalNome', hospitalNome); }
+                    if (filtroSetor    !== '__todos__') { params.set('setor',    filtroSetor);    params.set('setorNome',    setorNome); }
+                    if (!mostrarRepasse) params.set('mostrarRepasse', '0');
+                    window.open(`/relatorio-faturamento?${params}`, '_blank');
+                  }}
+                >
+                  <Printer className="h-3.5 w-3.5" /> Imprimir Relatório
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="gap-1.5 h-8 text-xs"
+                  onClick={() => {
+                    const hospitalNome = filtroHospital === '__todos__' ? '' : (hospitals.find(h => h.id === filtroHospital)?.nome ?? '');
+                    const setorNome    = filtroSetor    === '__todos__' ? '' : (sectors.find(s => s.id === filtroSetor)?.nome ?? '');
+                    const params = new URLSearchParams({ inicio: periodoInicio, fim: periodoFim });
+                    if (filtroHospital !== '__todos__') { params.set('hospital', filtroHospital); params.set('hospitalNome', hospitalNome); }
+                    if (filtroSetor    !== '__todos__') { params.set('setor',    filtroSetor);    params.set('setorNome',    setorNome); }
+                    if (!mostrarRepasse) params.set('mostrarRepasse', '0');
+                    window.open(`/relatorio-faturamento?${params}#extrato-financeiro`, '_blank');
+                  }}
+                >
+                  <FileSpreadsheet className="h-3.5 w-3.5" /> Extrato Financeiro
+                </Button>
+                <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
+                  <Checkbox checked={mostrarRepasse} onCheckedChange={v => setMostrarRepasse(v === true)} />
+                  Exibir repasse / cota parte
+                </label>
+              <Button
+                  size="sm"
+                  variant={modoComparacao ? 'default' : 'outline'}
+                  className="gap-1.5 h-8 text-xs"
+                  onClick={() => setModoComparacao(v => !v)}
+                >
+                  {modoComparacao
+                    ? <><CalendarDays className="h-3.5 w-3.5" /> Ver Mês a Mês</>
+                    : <><BarChart2 className="h-3.5 w-3.5" /> Comparar Todos os Meses</>}
+                </Button>
+              </div>
+              {/* Filtros dos gráficos */}
+              <div className="flex flex-wrap gap-3 items-end">
+                {/* Atalhos rápidos */}
+                <div>
+                  <Label className="text-xs block mb-1">Atalho</Label>
+                  <div className="flex gap-1">
+                    {[3, 6, 12].map(m => (
+                      <Button key={m} size="sm" variant="outline" className="h-9 px-2.5 text-xs"
+                        onClick={() => aplicarAtalho(m)}>
+                        {m}m
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+                {/* Mês único */}
+                <div>
+                  <Label className="text-xs">Mês</Label>
+                  <input
+                    type="month"
+                    value={periodoInicio === periodoFim ? periodoInicio : ''}
+                    max={mesAtual}
+                    onChange={e => { setPeriodoInicio(e.target.value); setPeriodoFim(e.target.value); }}
+                    className="flex h-9 w-36 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                  />
+                </div>
+                {/* De */}
+                <div>
+                  <Label className="text-xs">De</Label>
+                  <input
+                    type="month"
+                    value={periodoInicio}
+                    max={periodoFim}
+                    onChange={e => setPeriodoInicio(e.target.value)}
+                    className="flex h-9 w-36 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                  />
+                </div>
+                {/* Até */}
+                <div>
+                  <Label className="text-xs">Até</Label>
+                  <input
+                    type="month"
+                    value={periodoFim}
+                    min={periodoInicio}
+                    max={mesAtual}
+                    onChange={e => setPeriodoFim(e.target.value)}
+                    className="flex h-9 w-36 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                  />
+                </div>
+                {/* Cliente */}
+                <div className="min-w-[170px]">
+                  <Label className="text-xs">Cliente</Label>
+                  <Select value={filtroHospital} onValueChange={v => { setFiltroHospital(v); setFiltroSetor('__todos__'); }}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__todos__">Todos os clientes</SelectItem>
+                      {hospitals.map(h => <SelectItem key={h.id} value={h.id}>{h.nome}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                {/* Setor */}
+                <div className="min-w-[170px]">
+                  <Label className="text-xs">Setor</Label>
+                  <Select value={filtroSetor} onValueChange={setFiltroSetor} disabled={setoresFiltro.length === 0}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__todos__">Todos os setores</SelectItem>
+                      {setoresFiltro.map(s => <SelectItem key={s.id} value={s.id}>{s.nome}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            </div>
+
+            {loadingChart ? (
+              <div className="p-10 text-center text-sm text-muted-foreground">Carregando gráficos…</div>
+            ) : !modoComparacao ? (
+              /* ── Vista individual: um card por mês ── */
+              <div>
+                {dadosMensais.length === 0 ? (
+                  <p className="text-sm text-muted-foreground text-center py-10">Sem dados no período.</p>
+                ) : (() => {
+                  const maxFat = Math.max(...dadosMensais.map(m => m.faturamento));
+                  return (
+                    <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
+                      {dadosMensais.map((m, i) => {
+                        const prev = dadosMensais[i - 1];
+                        const varPct = prev && prev.faturamento > 0
+                          ? ((m.faturamento - prev.faturamento) / prev.faturamento) * 100
+                          : null;
+                        const isBest = m.faturamento > 0 && m.faturamento === maxFat;
+                        const semDados = m.faturamento === 0 && m.plantoes === 0;
+                        return (
+                          <Card key={m.mes} className={`relative overflow-hidden transition-shadow hover:shadow-md ${isBest ? 'ring-2 ring-primary' : ''}`}>
+                            {isBest && (
+                              <div className="absolute top-0 right-0 bg-primary text-white text-[10px] font-bold px-2 py-0.5 rounded-bl-lg">
+                                MELHOR MÊS
+                              </div>
+                            )}
+                            <CardContent className="p-4">
+                              <p className="text-sm font-bold text-muted-foreground mb-2">{m.mes}</p>
+                              {semDados ? (
+                                <p className="text-xs text-muted-foreground italic">Sem lançamentos</p>
+                              ) : (
+                                <>
+                                  <p className="text-xl font-bold tabular-nums text-primary leading-tight">
+                                    {formatCurrency(m.faturamento)}
+                                  </p>
+                                  <p className="text-[11px] text-muted-foreground mt-0.5">Faturamento</p>
+
+                                  {varPct !== null && (
+                                    <div className={`flex items-center gap-1 mt-1.5 text-xs font-semibold ${varPct >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+                                      {varPct >= 0
+                                        ? <TrendingUp className="h-3.5 w-3.5" />
+                                        : <TrendingDown className="h-3.5 w-3.5" />}
+                                      {varPct >= 0 ? '+' : ''}{varPct.toFixed(1)}% vs mês anterior
+                                    </div>
+                                  )}
+
+                                  <div className="mt-2 pt-2 border-t space-y-0.5">
+                                    <div className="flex justify-between text-[11px]">
+                                      <span className="text-muted-foreground">Repasse</span>
+                                      <span className="tabular-nums font-medium">{formatCurrency(m.repasse)}</span>
+                                    </div>
+                                    <div className="flex justify-between text-[11px]">
+                                      <span className="text-muted-foreground">Plantões</span>
+                                      <span className="tabular-nums font-medium">{m.plantoes}</span>
+                                    </div>
+                                  </div>
+                                </>
+                              )}
+                            </CardContent>
+                          </Card>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+              </div>
+            ) : (
+              <div className="space-y-5">
+
+                {/* Gráfico 1 — Faturamento mensal (linha + barra) */}
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm">Faturamento Mensal</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <ResponsiveContainer width="100%" height={280}>
+                      <BarChart data={dadosMensais} margin={{ top: 4, right: 16, left: 0, bottom: 4 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                        <XAxis dataKey="mes" tick={{ fontSize: 11 }} />
+                        <YAxis tickFormatter={fmtK} tick={{ fontSize: 11 }} width={70} />
+                        <Tooltip
+                          contentStyle={tooltipStyle}
+                          formatter={(v: number, name: string) => [formatCurrency(v), name]}
+                        />
+                        <Legend wrapperStyle={{ fontSize: 12 }} />
+                        <Bar dataKey="faturamento" name="Faturamento Cliente" fill={NAVY} radius={[3,3,0,0]} />
+                        <Bar dataKey="repasse"     name="Repasse Cooperado"  fill={GREEN} radius={[3,3,0,0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </CardContent>
+                </Card>
+
+                <div className="grid md:grid-cols-2 gap-5">
+
+                  {/* Gráfico 2 — Por cliente (pizza) */}
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm">Faturamento por Cliente</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      {dadosPorCliente.length === 0 ? (
+                        <p className="text-sm text-muted-foreground text-center py-10">Sem dados no período.</p>
+                      ) : (
+                        <ResponsiveContainer width="100%" height={260}>
+                          <PieChart>
+                            <Pie
+                              data={dadosPorCliente}
+                              dataKey="valor"
+                              nameKey="nome"
+                              cx="50%"
+                              cy="50%"
+                              outerRadius={90}
+                              label={({ nome, percent }) => `${nome.length > 14 ? nome.slice(0,13)+'…' : nome} ${(percent * 100).toFixed(0)}%`}
+                              labelLine={true}
+                            >
+                              {dadosPorCliente.map((_, i) => (
+                                <Cell key={i} fill={CORES_PIZZA[i % CORES_PIZZA.length]} />
+                              ))}
+                            </Pie>
+                            <Tooltip
+                              contentStyle={tooltipStyle}
+                              formatter={(v: number) => [formatCurrency(v), 'Faturamento']}
+                            />
+                          </PieChart>
+                        </ResponsiveContainer>
+                      )}
+                    </CardContent>
+                  </Card>
+
+                  {/* Gráfico 3 — Por setor (barras horizontais) */}
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm">Faturamento por Setor (top 10)</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      {dadosPorSetor.length === 0 ? (
+                        <p className="text-sm text-muted-foreground text-center py-10">Sem dados no período.</p>
+                      ) : (
+                        <ResponsiveContainer width="100%" height={260}>
+                          <BarChart
+                            data={dadosPorSetor}
+                            layout="vertical"
+                            margin={{ top: 4, right: 60, left: 4, bottom: 4 }}
+                          >
+                            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
+                            <XAxis type="number" tickFormatter={fmtK} tick={{ fontSize: 10 }} />
+                            <YAxis
+                              type="category"
+                              dataKey="nome"
+                              width={110}
+                              tick={{ fontSize: 10 }}
+                              tickFormatter={v => v.length > 16 ? v.slice(0, 15) + '…' : v}
+                            />
+                            <Tooltip
+                              contentStyle={tooltipStyle}
+                              formatter={(v: number) => [formatCurrency(v), 'Faturamento']}
+                            />
+                            <Bar dataKey="valor" name="Faturamento" fill={BLUE} radius={[0,3,3,0]}
+                              label={{ position: 'right', formatter: (v: number) => fmtK(v), fontSize: 10 }}
+                            />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      )}
+                    </CardContent>
+                  </Card>
+                </div>
+
+                {/* Gráfico 5 — Plantões por categoria */}
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm">Plantões por Mês — Enfermeiros vs Técnicos</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <ResponsiveContainer width="100%" height={280}>
+                      <BarChart data={dadosCategoria} margin={{ top: 4, right: 16, left: 0, bottom: 4 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                        <XAxis dataKey="mes" tick={{ fontSize: 11 }} />
+                        <YAxis tick={{ fontSize: 11 }} width={45} />
+                        <Tooltip
+                          contentStyle={tooltipStyle}
+                          formatter={(v: number, name: string) => [v + ' plantões', name]}
+                        />
+                        <Legend wrapperStyle={{ fontSize: 12 }} />
+                        <Bar dataKey="enfermeiros" name="Enfermeiros" fill={NAVY}  radius={[3,3,0,0]} />
+                        <Bar dataKey="tecnicos"    name="Técnicos"    fill={BLUE}  radius={[3,3,0,0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </CardContent>
+                </Card>
+
+                {/* Gráfico 4 — Evolução repasse (linha) */}
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm">Evolução Mensal — Faturamento vs Repasse</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <ResponsiveContainer width="100%" height={220}>
+                      <LineChart data={dadosMensais} margin={{ top: 4, right: 16, left: 0, bottom: 4 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                        <XAxis dataKey="mes" tick={{ fontSize: 11 }} />
+                        <YAxis tickFormatter={fmtK} tick={{ fontSize: 11 }} width={70} />
+                        <Tooltip
+                          contentStyle={tooltipStyle}
+                          formatter={(v: number, name: string) => [formatCurrency(v), name]}
+                        />
+                        <Legend wrapperStyle={{ fontSize: 12 }} />
+                        <Line type="monotone" dataKey="faturamento" name="Faturamento" stroke={NAVY}  strokeWidth={2} dot={{ r: 4 }} />
+                        <Line type="monotone" dataKey="repasse"     name="Repasse"     stroke={GREEN} strokeWidth={2} dot={{ r: 4 }} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </CardContent>
+                </Card>
+
+              </div>
+            )}
+          </div>
+
+          {/* Tabela de lançamentos recentes — existente */}
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between">
+              <CardTitle>Lançamentos recentes</CardTitle>
+              <Button asChild variant="ghost" size="sm"><Link to="/financeiro/lancamentos">Ver todos</Link></Button>
+            </CardHeader>
+            <CardContent>
+              {loading ? (
+                <p className="text-sm text-muted-foreground">Carregando…</p>
+              ) : recents.length === 0 ? (
+                <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
+                  Nenhum lançamento ainda. Comece criando o primeiro.
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="text-xs uppercase tracking-wider text-muted-foreground border-b">
+                      <tr>
+                        <th className="text-left py-3 font-medium">Cooperado</th>
+                        <th className="text-left py-3 font-medium">Hospital / Setor</th>
+                        <th className="text-left py-3 font-medium">Data</th>
+                        <th className="text-right py-3 font-medium">Valor cliente</th>
+                        <th className="text-right py-3 font-medium">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y">
+                      {recents.map(r => (
+                        <tr key={r.id} className="hover:bg-muted/40">
+                          <td className="py-3">
+                            <div className="font-medium">{r.cooperados?.nome ?? '—'}</div>
+                            <div className="text-xs text-muted-foreground">{profissaoLabel[r.cooperados?.profissao ?? ''] ?? '—'}</div>
+                          </td>
+                          <td className="py-3">
+                            <div>{r.hospitals?.nome ?? '—'}</div>
+                            <div className="text-xs text-muted-foreground">{r.sectors?.nome ?? '—'}</div>
+                          </td>
+                          <td className="py-3 tabular-nums">{formatDate(r.data_plantao)}</td>
+                          <td className="py-3 text-right tabular-nums font-medium">{formatCurrency(r.valor_cobrado_cliente)}</td>
+                          <td className="py-3 text-right"><StatusBadge status={r.status} /></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </>
+      )}
+    </div>
+  );
+}
