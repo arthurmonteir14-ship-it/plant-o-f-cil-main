@@ -4,6 +4,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Download, Eye, EyeOff, FileBarChart2, FileText, TrendingUp, Users, Lock } from 'lucide-react';
 import { toast } from 'sonner';
 import { formatCurrency, profissaoLabel, tipoPlantaoLabel } from '@/lib/format';
@@ -153,6 +154,7 @@ function gerarPDFConsolidado(
   filtros: Record<string, string>,
   isFaturamento: boolean,
   mostrarValores: boolean,
+  mostrarHoras: boolean = true,
 ) {
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
   const W = doc.internal.pageSize.getWidth();
@@ -185,27 +187,23 @@ function gerarPDFConsolidado(
     doc.text(k.value, x + 4, 44);
   });
 
-  // Larguras dinâmicas conforme mostrarValores
-  const colStyles = mostrarValores
-    ? {
-        0: { cellWidth: 60 },
-        1: { cellWidth: 42 },
-        2: { cellWidth: 42 },
-        3: { cellWidth: 20, halign: 'center' as const },
-        4: { cellWidth: 20, halign: 'center' as const },
-        5: { cellWidth: 18, halign: 'center' as const },
-        6: { cellWidth: 23, halign: 'right'  as const },
-        7: { cellWidth: 32, halign: 'right'  as const },
-      }
-    : {
-        0: { cellWidth: 78 },
-        1: { cellWidth: 52 },
-        2: { cellWidth: 52 },
-        3: { cellWidth: 24, halign: 'center' as const },
-        4: { cellWidth: 24, halign: 'center' as const },
-        5: { cellWidth: 20, halign: 'center' as const },
-        6: { cellWidth: 30, halign: 'right'  as const },
-      };
+  // Larguras dinâmicas conforme mostrarHoras/mostrarValores — quanto menos colunas extras, mais largas as fixas
+  const extras = (mostrarHoras ? 1 : 0) + (mostrarValores ? 1 : 0);
+  const baseWidths: [number, number, number, number, number, number] =
+    extras === 2 ? [60, 42, 42, 20, 20, 18] :
+    extras === 1 ? [78, 52, 52, 24, 24, 20] :
+                   [95, 62, 62, 28, 28, 25];
+  const colStyles: Record<number, { cellWidth: number; halign?: 'center' | 'right' }> = {
+    0: { cellWidth: baseWidths[0] },
+    1: { cellWidth: baseWidths[1] },
+    2: { cellWidth: baseWidths[2] },
+    3: { cellWidth: baseWidths[3], halign: 'center' },
+    4: { cellWidth: baseWidths[4], halign: 'center' },
+    5: { cellWidth: baseWidths[5], halign: 'center' },
+  };
+  let colIdx = 6;
+  if (mostrarHoras)   colStyles[colIdx++] = { cellWidth: extras === 2 ? 23 : 30, halign: 'right' };
+  if (mostrarValores) colStyles[colIdx++] = { cellWidth: extras === 2 ? 32 : 32, halign: 'right' };
 
   const setores = buildSetorCards(rows);
   let startY = 54;
@@ -217,45 +215,37 @@ function gerarPDFConsolidado(
     doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(31, 41, 99);
     doc.text(`Setor: ${setor.nome}`, 14, startY);
     doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(80, 80, 80);
-    const infoSetor = `${setor.subtotalTotal} plantão(ões)  ·  ${setor.subtotalDiurnos} diurno(s)  ·  ${setor.subtotalNoturnos} noturno(s)  ·  ${setor.subtotalHoras.toFixed(1)}h`
+    const infoSetor = `${setor.subtotalTotal} plantão(ões)  ·  ${setor.subtotalDiurnos} diurno(s)  ·  ${setor.subtotalNoturnos} noturno(s)`
+      + (mostrarHoras ? `  ·  ${setor.subtotalHoras.toFixed(1)}h` : '')
       + (mostrarValores ? `  ·  Total: ${fmtBRL(subtotalValor)}` : '');
     doc.text(infoSetor, 14, startY + 4);
     startY += 9;
 
-    const head = mostrarValores
-      ? [['Cooperado', 'Função', 'Setor', 'Diurnos', 'Noturnos', 'Total', 'Horas', valorLabel]]
-      : [['Cooperado', 'Função', 'Setor', 'Diurnos', 'Noturnos', 'Total', 'Horas']];
+    const head = [[
+      'Cooperado', 'Função', 'Setor', 'Diurnos', 'Noturnos', 'Total',
+      ...(mostrarHoras ? ['Horas'] : []),
+      ...(mostrarValores ? [valorLabel] : []),
+    ]];
 
-    const body = setor.coops.map(c => {
-      const row: string[] = [
-        c.nome,
-        profissaoLabel[c.profissao] ?? c.profissao,
-        setor.nome,
-        String(c.diurnos),
-        String(c.noturnos),
-        String(c.total),
-        c.totalHoras.toFixed(1) + 'h',
-      ];
-      if (mostrarValores) row.push(fmtBRL(isFaturamento ? c.valorCliente : c.valorCooperado));
-      return row;
-    });
+    const body = setor.coops.map(c => [
+      c.nome,
+      profissaoLabel[c.profissao] ?? c.profissao,
+      setor.nome,
+      String(c.diurnos),
+      String(c.noturnos),
+      String(c.total),
+      ...(mostrarHoras ? [c.totalHoras.toFixed(1) + 'h'] : []),
+      ...(mostrarValores ? [fmtBRL(isFaturamento ? c.valorCliente : c.valorCooperado)] : []),
+    ]);
 
-    const foot = mostrarValores
-      ? [[
-          { content: `Subtotal — ${setor.nome}`, colSpan: 3, styles: { halign: 'right' as const } },
-          { content: String(setor.subtotalDiurnos),  styles: { halign: 'center' as const } },
-          { content: String(setor.subtotalNoturnos), styles: { halign: 'center' as const } },
-          { content: String(setor.subtotalTotal),    styles: { halign: 'center' as const } },
-          { content: setor.subtotalHoras.toFixed(1) + 'h', styles: { halign: 'right' as const } },
-          { content: fmtBRL(subtotalValor),          styles: { halign: 'right' as const } },
-        ]]
-      : [[
-          { content: `Subtotal — ${setor.nome}`, colSpan: 3, styles: { halign: 'right' as const } },
-          { content: String(setor.subtotalDiurnos),  styles: { halign: 'center' as const } },
-          { content: String(setor.subtotalNoturnos), styles: { halign: 'center' as const } },
-          { content: String(setor.subtotalTotal),    styles: { halign: 'center' as const } },
-          { content: setor.subtotalHoras.toFixed(1) + 'h', styles: { halign: 'right' as const } },
-        ]];
+    const foot = [[
+      { content: `Subtotal — ${setor.nome}`, colSpan: 3, styles: { halign: 'right' as const } },
+      { content: String(setor.subtotalDiurnos),  styles: { halign: 'center' as const } },
+      { content: String(setor.subtotalNoturnos), styles: { halign: 'center' as const } },
+      { content: String(setor.subtotalTotal),    styles: { halign: 'center' as const } },
+      ...(mostrarHoras ? [{ content: setor.subtotalHoras.toFixed(1) + 'h', styles: { halign: 'right' as const } }] : []),
+      ...(mostrarValores ? [{ content: fmtBRL(subtotalValor), styles: { halign: 'right' as const } }] : []),
+    ]];
 
     autoTable(doc, {
       startY, head, body, foot,
@@ -271,22 +261,14 @@ function gerarPDFConsolidado(
 
   // Total geral
   if (startY > doc.internal.pageSize.getHeight() - 25) { doc.addPage(); startY = 14; }
-  const totalGeralRow = mostrarValores
-    ? [[
-        { content: 'TOTAL GERAL', colSpan: 3, styles: { fontStyle: 'bold', halign: 'left' as const } },
-        { content: String(totalDiurnos),  styles: { halign: 'center' as const, fontStyle: 'bold' } },
-        { content: String(totalNoturnos), styles: { halign: 'center' as const, fontStyle: 'bold' } },
-        { content: String(totalDiurnos + totalNoturnos + totalDiaristas), styles: { halign: 'center' as const, fontStyle: 'bold' } },
-        { content: rows.reduce((s, r) => s + Number(r.total_horas), 0).toFixed(1) + 'h', styles: { halign: 'right' as const, fontStyle: 'bold' } },
-        { content: fmtBRL(totalValor),    styles: { halign: 'right' as const, fontStyle: 'bold' } },
-      ]]
-    : [[
-        { content: 'TOTAL GERAL', colSpan: 3, styles: { fontStyle: 'bold', halign: 'left' as const } },
-        { content: String(totalDiurnos),  styles: { halign: 'center' as const, fontStyle: 'bold' } },
-        { content: String(totalNoturnos), styles: { halign: 'center' as const, fontStyle: 'bold' } },
-        { content: String(totalDiurnos + totalNoturnos + totalDiaristas), styles: { halign: 'center' as const, fontStyle: 'bold' } },
-        { content: rows.reduce((s, r) => s + Number(r.total_horas), 0).toFixed(1) + 'h', styles: { halign: 'right' as const, fontStyle: 'bold' } },
-      ]];
+  const totalGeralRow = [[
+    { content: 'TOTAL GERAL', colSpan: 3, styles: { fontStyle: 'bold', halign: 'left' as const } },
+    { content: String(totalDiurnos),  styles: { halign: 'center' as const, fontStyle: 'bold' } },
+    { content: String(totalNoturnos), styles: { halign: 'center' as const, fontStyle: 'bold' } },
+    { content: String(totalDiurnos + totalNoturnos + totalDiaristas), styles: { halign: 'center' as const, fontStyle: 'bold' } },
+    ...(mostrarHoras ? [{ content: rows.reduce((s, r) => s + Number(r.total_horas), 0).toFixed(1) + 'h', styles: { halign: 'right' as const, fontStyle: 'bold' } }] : []),
+    ...(mostrarValores ? [{ content: fmtBRL(totalValor), styles: { halign: 'right' as const, fontStyle: 'bold' } }] : []),
+  ]];
 
   autoTable(doc, {
     startY, body: totalGeralRow,
@@ -303,32 +285,30 @@ function gerarPDFConsolidado(
   doc.text('Resumo por Setor', 14, startY);
   startY += 4;
 
-  const resumoHead = mostrarValores
-    ? [['Setor', 'Plantões', 'Horas', valorLabel]]
-    : [['Setor', 'Plantões', 'Horas']];
+  const resumoHead = [[
+    'Setor', 'Plantões',
+    ...(mostrarHoras ? ['Horas'] : []),
+    ...(mostrarValores ? [valorLabel] : []),
+  ]];
 
-  const resumoBody = setores.map(s => {
-    const row: string[] = [s.nome, String(s.subtotalTotal), s.subtotalHoras.toFixed(1) + 'h'];
-    if (mostrarValores) row.push(fmtBRL(isFaturamento ? s.subtotalValorCliente : s.subtotalValorCooperado));
-    return row;
-  });
+  const resumoBody = setores.map(s => [
+    s.nome, String(s.subtotalTotal),
+    ...(mostrarHoras ? [s.subtotalHoras.toFixed(1) + 'h'] : []),
+    ...(mostrarValores ? [fmtBRL(isFaturamento ? s.subtotalValorCliente : s.subtotalValorCooperado)] : []),
+  ]);
 
-  const resumoFoot = mostrarValores
-    ? [[
-        { content: 'Total', styles: { fontStyle: 'bold', halign: 'left' as const } },
-        { content: String(setores.reduce((s, x) => s + x.subtotalTotal, 0)), styles: { fontStyle: 'bold' } },
-        { content: setores.reduce((s, x) => s + x.subtotalHoras, 0).toFixed(1) + 'h', styles: { fontStyle: 'bold', halign: 'right' as const } },
-        { content: fmtBRL(totalValor), styles: { fontStyle: 'bold', halign: 'right' as const } },
-      ]]
-    : [[
-        { content: 'Total', styles: { fontStyle: 'bold', halign: 'left' as const } },
-        { content: String(setores.reduce((s, x) => s + x.subtotalTotal, 0)), styles: { fontStyle: 'bold' } },
-        { content: setores.reduce((s, x) => s + x.subtotalHoras, 0).toFixed(1) + 'h', styles: { fontStyle: 'bold', halign: 'right' as const } },
-      ]];
+  const resumoFoot = [[
+    { content: 'Total', styles: { fontStyle: 'bold', halign: 'left' as const } },
+    { content: String(setores.reduce((s, x) => s + x.subtotalTotal, 0)), styles: { fontStyle: 'bold' } },
+    ...(mostrarHoras ? [{ content: setores.reduce((s, x) => s + x.subtotalHoras, 0).toFixed(1) + 'h', styles: { fontStyle: 'bold', halign: 'right' as const } }] : []),
+    ...(mostrarValores ? [{ content: fmtBRL(totalValor), styles: { fontStyle: 'bold', halign: 'right' as const } }] : []),
+  ]];
 
-  const resumoColStyles = mostrarValores
-    ? { 0: { cellWidth: 80 }, 1: { cellWidth: 30, halign: 'center' as const }, 2: { cellWidth: 30, halign: 'right' as const }, 3: { cellWidth: 50, halign: 'right' as const } }
-    : { 0: { cellWidth: 110 }, 1: { cellWidth: 50, halign: 'center' as const }, 2: { cellWidth: 50, halign: 'right' as const } };
+  const resumoExtras = (mostrarHoras ? 1 : 0) + (mostrarValores ? 1 : 0);
+  const resumoColStyles: Record<number, { cellWidth: number; halign?: 'center' | 'right' }> =
+    resumoExtras === 2 ? { 0: { cellWidth: 80 }, 1: { cellWidth: 30, halign: 'center' }, 2: { cellWidth: 30, halign: 'right' }, 3: { cellWidth: 50, halign: 'right' } }
+    : resumoExtras === 1 ? { 0: { cellWidth: 110 }, 1: { cellWidth: 50, halign: 'center' }, 2: { cellWidth: 50, halign: 'right' } }
+    : { 0: { cellWidth: 140 }, 1: { cellWidth: 70, halign: 'center' } };
 
   autoTable(doc, {
     startY, head: resumoHead, body: resumoBody, foot: resumoFoot,
@@ -344,12 +324,12 @@ function gerarPDFConsolidado(
   doc.save(`${isFaturamento ? 'faturamento' : 'repasse'}_${periodoLabel.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`);
 }
 
-function gerarPDFFaturamento(rows: LancRow[], periodoLabel: string, filtros: Record<string, string>, mostrarValores: boolean) {
-  gerarPDFConsolidado(rows, periodoLabel, filtros, true, mostrarValores);
+function gerarPDFFaturamento(rows: AggRow[], periodoLabel: string, filtros: Record<string, string>, mostrarValores: boolean, mostrarHoras: boolean) {
+  gerarPDFConsolidado(rows, periodoLabel, filtros, true, mostrarValores, mostrarHoras);
 }
 
-function gerarPDFRepasse(rows: LancRow[], periodoLabel: string, filtros: Record<string, string>, mostrarValores: boolean) {
-  gerarPDFConsolidado(rows, periodoLabel, filtros, false, mostrarValores);
+function gerarPDFRepasse(rows: AggRow[], periodoLabel: string, filtros: Record<string, string>, mostrarValores: boolean, mostrarHoras: boolean) {
+  gerarPDFConsolidado(rows, periodoLabel, filtros, false, mostrarValores, mostrarHoras);
 }
 
 export default function Relatorios() {
@@ -368,6 +348,7 @@ export default function Relatorios() {
   const [filterCooperado, setFilterCooperado] = useState('all');
   const [filterProfissao, setFilterProfissao] = useState('all');
   const [mostrarValores, setMostrarValores] = useState(true);
+  const [ocultarHorasPDF, setOcultarHorasPDF] = useState(false);
 
   const periodoCalc = useMemo(() => calcPeriodo(periodo), [periodo]);
   const fetchIdRef = useRef(0);
@@ -489,7 +470,7 @@ export default function Relatorios() {
   const kpisBase = [
     { label: 'Diurnos',       value: loading ? '—' : String(totalDiurnos) },
     { label: 'Noturnos',      value: loading ? '—' : String(totalNoturnos) },
-    { label: 'Total Plantões',value: loading ? '—' : String(filtered.length) },
+    { label: 'Total Plantões',value: loading ? '—' : String(totalPlantoes) },
   ];
   const kpiValor = isFaturamento
     ? { label: 'Total faturado', value: loading ? '—' : formatCurrency(totalCliente), highlight: true }
@@ -504,19 +485,25 @@ export default function Relatorios() {
           <h1 className="text-2xl md:text-3xl font-bold">Relatórios</h1>
           <p className="text-sm text-muted-foreground">Análise dos plantões por período</p>
         </div>
-        <div className="flex gap-2">
-          <Button variant="outline" className="gap-2"
-            onClick={() => isFaturamento
-              ? gerarPDFFaturamento(filtered, periodoCalc.label, getFiltrosNomes(), mostrarValores)
-              : gerarPDFRepasse(filtered, periodoCalc.label, getFiltrosNomes(), mostrarValores)}
-            disabled={filtered.length === 0}>
-            <FileText className="h-4 w-4" /> PDF
-          </Button>
-          <Button variant="outline" className="gap-2"
-            onClick={() => isFaturamento ? downloadCSVFaturamento(filtered) : downloadCSVRepasse(filtered)}
-            disabled={filtered.length === 0}>
-            <Download className="h-4 w-4" /> CSV
-          </Button>
+        <div className="flex flex-col items-end gap-1.5">
+          <div className="flex gap-2">
+            <Button variant="outline" className="gap-2"
+              onClick={() => isFaturamento
+                ? gerarPDFFaturamento(filtered, periodoCalc.label, getFiltrosNomes(), mostrarValores, !ocultarHorasPDF)
+                : gerarPDFRepasse(filtered, periodoCalc.label, getFiltrosNomes(), mostrarValores, !ocultarHorasPDF)}
+              disabled={filtered.length === 0}>
+              <FileText className="h-4 w-4" /> PDF
+            </Button>
+            <Button variant="outline" className="gap-2"
+              onClick={() => isFaturamento ? downloadCSVFaturamento(filtered) : downloadCSVRepasse(filtered)}
+              disabled={filtered.length === 0}>
+              <Download className="h-4 w-4" /> CSV
+            </Button>
+          </div>
+          <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
+            <Checkbox checked={ocultarHorasPDF} onCheckedChange={v => setOcultarHorasPDF(v === true)} />
+            Extrair PDF sem as horas
+          </label>
         </div>
       </div>
 
@@ -649,7 +636,7 @@ export default function Relatorios() {
           {setorCards.map(setor => (
             <Card key={setor.key} className={`overflow-hidden ${isSetorFechado(setor.key) ? 'border-red-300' : ''}`}>
               {/* cabeçalho do setor */}
-              <div className={`flex items-center justify-between px-4 py-3 border-b ${isSetorFechado(setor.key) ? 'bg-red-50/50' : 'bg-muted/40'}`}>
+              <div className={`flex items-center justify-between px-4 py-3 border-b ${isSetorFechado(setor.key) ? 'bg-red-50/50 dark:bg-red-950/25' : 'bg-muted/40'}`}>
                 <div>
                   <p className="font-semibold text-[15px]">
                     {isSetorFechado(setor.key) && <Lock className="inline h-3.5 w-3.5 mr-1.5 text-red-500 mb-0.5" />}

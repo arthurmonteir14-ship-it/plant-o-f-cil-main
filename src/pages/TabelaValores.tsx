@@ -6,15 +6,22 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { Plus, Trash2, Loader2, Pencil } from 'lucide-react';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
+import { Plus, Trash2, Loader2, Pencil, X } from 'lucide-react';
 import { formatCurrency, profissaoLabel, tipoPlantaoLabel, tipoPlantaoOptions } from '@/lib/format';
 import { toast } from 'sonner';
 import { useAuth } from '@/hooks/useAuth';
+
+const toTitleCase = (s: string) =>
+  s.trim().toLowerCase().split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+
+const NOVA_PROFISSAO = '__nova__';
 
 interface Valor {
   id: string; profissao: string; tipo_plantao: string;
   hospital_id: string | null; valor_hora_cliente: number;
   percentual_repasse: number; valor_hora_cooperado: number | null;
+  taxa_administrativa_cades: number | null;
   horas: number | null; ativo: boolean;
 }
 interface Hospital { id: string; nome: string; }
@@ -22,11 +29,13 @@ interface Hospital { id: string; nome: string; }
 type FormState = {
   profissao: string; tipo_plantao: string; hospital_id: string;
   horas: string; valor_hora_cliente: string; valor_hora_cooperado: string;
+  taxa_administrativa_cades: string;
 };
 
 const emptyForm: FormState = {
   profissao: 'enfermeiro', tipo_plantao: 'normal', hospital_id: '__padrao__',
   horas: '12', valor_hora_cliente: '', valor_hora_cooperado: '',
+  taxa_administrativa_cades: '',
 };
 
 export default function TabelaValores() {
@@ -43,18 +52,35 @@ export default function TabelaValores() {
   const [form, setForm]           = useState<FormState>({ ...emptyForm });
   const [filtroCliente, setFiltroCliente] = useState('__todos__');
   const [filtroTipo, setFiltroTipo]       = useState('__todos__');
+  const [cooperadoProfissoes, setCooperadoProfissoes] = useState<string[]>([]);
+  const [novaProfissaoInput, setNovaProfissaoInput]   = useState('');
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const load = async () => {
     setLoading(true);
-    const [v, h] = await Promise.all([
+    const [v, h, c] = await Promise.all([
       supabase.from('tabela_valores').select('*').order('profissao').order('tipo_plantao'),
       supabase.from('hospitals').select('id, nome').order('nome'),
+      supabase.from('cooperados').select('profissao'),
     ]);
     setRows((v.data ?? []) as unknown as Valor[]);
     setHospitals(h.data ?? []);
+    setCooperadoProfissoes([...new Set((c.data ?? []).map((r: any) => r.profissao as string))]);
     setLoading(false);
   };
   useEffect(() => { load(); }, []);
+
+  // Profissão não é mais um enum fixo no banco — reúne as profissões padrão com as que já
+  // estiverem em uso (tabela de valores ou cooperados cadastrados), sem precisar de código novo.
+  const profissoesConhecidas = useMemo(() => {
+    const set = new Set<string>([
+      ...Object.keys(profissaoLabel),
+      ...rows.map(r => r.profissao),
+      ...cooperadoProfissoes,
+    ]);
+    return [...set].sort((a, b) => (profissaoLabel[a] ?? a).localeCompare(profissaoLabel[b] ?? b));
+  }, [rows, cooperadoProfissoes]);
 
   const resolveValorCoop = (r: Valor) =>
     r.valor_hora_cooperado != null
@@ -94,10 +120,16 @@ export default function TabelaValores() {
   const coopMaior   = !isNaN(clienteHora) && !isNaN(coopHora) && coopHora > clienteHora;
 
   const salvar = async () => {
+    if (!form.profissao.trim()) return toast.error('Informe a profissão');
     if (!clienteHora || clienteHora <= 0) return toast.error('Informe um valor por hora válido');
     if (isNaN(coopHora) || coopHora < 0)  return toast.error('Informe um valor de repasse válido');
     if (coopMaior) return toast.error('Repasse não pode ser maior que o valor do cliente');
     if (!horasNum || horasNum <= 0) return toast.error('Informe a quantidade de horas');
+    const taxaAdmStr = form.taxa_administrativa_cades.trim();
+    const taxaAdm = taxaAdmStr ? parseFloat(taxaAdmStr.replace(',', '.')) : null;
+    if (taxaAdmStr && (taxaAdm === null || isNaN(taxaAdm) || taxaAdm < 0 || taxaAdm > 100)) {
+      return toast.error('Taxa Administrativa CADES deve ser um percentual entre 0 e 100');
+    }
     const percentual = +((coopHora / clienteHora) * 100).toFixed(4);
     const payload = {
       profissao: form.profissao, tipo_plantao: form.tipo_plantao,
@@ -105,6 +137,8 @@ export default function TabelaValores() {
       horas: horasNum,
       valor_hora_cliente: clienteHora,
       percentual_repasse: percentual,
+      valor_hora_cooperado: coopHora,
+      taxa_administrativa_cades: taxaAdm,
       ativo: true,
     };
     setSaving(true);
@@ -127,6 +161,9 @@ export default function TabelaValores() {
       horas: (r.horas ?? 12).toString(),
       valor_hora_cliente:   r.valor_hora_cliente.toFixed(2).replace('.', ','),
       valor_hora_cooperado: resolveValorCoop(r).toFixed(2).replace('.', ','),
+      taxa_administrativa_cades: r.taxa_administrativa_cades != null
+        ? r.taxa_administrativa_cades.toString().replace('.', ',')
+        : '',
     });
     setOpenEdit(true);
   };
@@ -135,6 +172,16 @@ export default function TabelaValores() {
     const { error } = await supabase.from('tabela_valores').update({ ativo: false } as never).eq('id', id);
     if (error) return toast.error(error.message);
     toast.success('Valor removido'); load();
+  };
+
+  const excluir = async (id: string) => {
+    setDeleting(true);
+    const { error } = await supabase.from('tabela_valores').delete().eq('id', id);
+    setDeleting(false);
+    if (error) return toast.error(error.message);
+    toast.success('Valor excluído definitivamente');
+    setDeleteId(null);
+    load();
   };
 
   // Preview do valor bruto no formulário
@@ -146,12 +193,29 @@ export default function TabelaValores() {
       <div className="grid grid-cols-2 gap-3">
         <div>
           <Label>Profissão</Label>
-          <Select value={form.profissao} onValueChange={v => setForm(f => ({ ...f, profissao: v }))}>
+          <Select
+            value={profissoesConhecidas.includes(form.profissao) ? form.profissao : NOVA_PROFISSAO}
+            onValueChange={v => {
+              if (v === NOVA_PROFISSAO) { setNovaProfissaoInput(''); setForm(f => ({ ...f, profissao: '' })); }
+              else setForm(f => ({ ...f, profissao: v }));
+            }}
+          >
             <SelectTrigger><SelectValue /></SelectTrigger>
             <SelectContent>
-              {Object.entries(profissaoLabel).map(([v, l]) => <SelectItem key={v} value={v}>{l}</SelectItem>)}
+              {profissoesConhecidas.map(v => <SelectItem key={v} value={v}>{profissaoLabel[v] ?? v}</SelectItem>)}
+              <SelectItem value={NOVA_PROFISSAO}>+ Nova profissão…</SelectItem>
             </SelectContent>
           </Select>
+          {!profissoesConhecidas.includes(form.profissao) && (
+            <Input
+              autoFocus
+              className="mt-2"
+              value={novaProfissaoInput}
+              onChange={e => setNovaProfissaoInput(e.target.value)}
+              onBlur={() => novaProfissaoInput.trim() && setForm(f => ({ ...f, profissao: toTitleCase(novaProfissaoInput) }))}
+              placeholder="Digite o nome da nova profissão"
+            />
+          )}
         </div>
         <div>
           <Label>Tipo de plantão</Label>
@@ -192,6 +256,17 @@ export default function TabelaValores() {
           <Label>Valor/hora — Cooperado (R$)</Label>
           <Input value={form.valor_hora_cooperado} onChange={e => setForm(f => ({ ...f, valor_hora_cooperado: e.target.value }))} placeholder="35,00" />
         </div>
+      </div>
+      <div>
+        <Label>Taxa Administrativa CADES (%) <span className="text-muted-foreground font-normal text-xs">(opcional)</span></Label>
+        <Input
+          value={form.taxa_administrativa_cades}
+          onChange={e => setForm(f => ({ ...f, taxa_administrativa_cades: e.target.value.replace(/[^0-9,.]/g, '') }))}
+          placeholder="Ex.: 10,156"
+        />
+        <p className="text-xs text-muted-foreground mt-1">
+          Descontada automaticamente no RPA do cooperado (sobre o valor do plantão já líquido de INSS), só para plantões desta categoria/atividade.
+        </p>
       </div>
       {/* Preview valor bruto */}
       {(prevBrutoCliente !== null || prevBrutoCoop !== null) && (
@@ -248,6 +323,34 @@ export default function TabelaValores() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Confirmação de exclusão permanente */}
+      <AlertDialog open={!!deleteId} onOpenChange={o => !o && setDeleteId(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Excluir valor definitivamente</AlertDialogTitle>
+            <AlertDialogDescription>
+              {(() => {
+                const r = rows.find(x => x.id === deleteId);
+                if (!r) return '';
+                const hospitalNome = hospitals.find(h => h.id === r.hospital_id)?.nome ?? 'Padrão (todos os clientes)';
+                return `Tem certeza que deseja excluir permanentemente o registro de "${profissaoLabel[r.profissao] ?? r.profissao}" / ${tipoPlantaoLabel[r.tipo_plantao] ?? r.tipo_plantao} / ${hospitalNome}? Essa ação não pode ser desfeita. Lançamentos de plantão já existentes não são afetados (o valor deles já foi gravado na hora do lançamento), mas nenhum lançamento novo poderá mais usar essa combinação até você cadastrar de novo.`;
+              })()}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={deleting}
+              onClick={() => deleteId && excluir(deleteId)}
+            >
+              {deleting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Excluir definitivamente
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Filtros */}
       <div className="flex flex-wrap gap-3">
@@ -309,6 +412,7 @@ export default function TabelaValores() {
                         {/* grupo cooperado — fundo verde muito leve */}
                         <th className="text-right p-3 font-medium bg-emerald-50 text-emerald-700 border-l border-emerald-200">Valor/h Cooperado</th>
                         <th className="text-right p-3 font-medium bg-emerald-50 text-emerald-700 border-r border-emerald-200">Valor Bruto Cooperado</th>
+                        <th className="text-right p-3 font-medium bg-muted/40">Taxa Adm. CADES</th>
                         {canEdit && <th className="text-right p-3 font-medium bg-muted/40">Ações</th>}
                       </tr>
                     </thead>
@@ -337,14 +441,20 @@ export default function TabelaValores() {
                             <td className="p-3 text-right tabular-nums bg-emerald-50/50 border-r border-emerald-100 font-semibold text-emerald-900">
                               {brutoCoop != null ? formatCurrency(brutoCoop) : '—'}
                             </td>
+                            <td className="p-3 text-right tabular-nums text-muted-foreground">
+                              {r.taxa_administrativa_cades != null ? `${r.taxa_administrativa_cades}%` : '—'}
+                            </td>
                             {canEdit && (
                               <td className="p-3 text-right">
                                 <div className="flex items-center justify-end gap-1">
                                   <Button size="sm" variant="ghost" onClick={() => abrirEdicao(r)} className="h-7 text-xs gap-1">
                                     <Pencil className="h-3.5 w-3.5" /> Editar
                                   </Button>
-                                  <Button size="sm" variant="ghost" onClick={() => desativar(r.id)} className="h-7 text-xs gap-1 text-destructive hover:text-destructive">
+                                  <Button size="sm" variant="ghost" onClick={() => desativar(r.id)} className="h-7 text-xs gap-1 text-destructive hover:text-destructive" title="Desativa o registro (fica oculto, mas continua no banco)">
                                     <Trash2 className="h-3.5 w-3.5" /> Remover
+                                  </Button>
+                                  <Button size="sm" variant="ghost" onClick={() => setDeleteId(r.id)} className="h-7 text-xs gap-1 text-destructive hover:text-destructive" title="Apaga o registro definitivamente do banco">
+                                    <X className="h-3.5 w-3.5" /> Excluir
                                   </Button>
                                 </div>
                               </td>

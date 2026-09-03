@@ -40,6 +40,7 @@ interface ImportRow {
   horario_inicio?: string; horario_fim?: string;
   total_horas?: number; valor_hora_cliente?: number; valor_cobrado_cliente?: number;
   valor_repasse_cooperado?: number; percentual_repasse?: number;
+  taxa_administrativa_cades?: number | null;
   erros: string[];
   avisos?: string[];
 }
@@ -135,7 +136,7 @@ function LancRow({ r, fechado, canDelete, onDelete, onEdit, checked, onCheck }: 
   checked: boolean; onCheck: (v: boolean) => void;
 }) {
   return (
-    <tr className={`${fechado ? 'bg-red-50/30 hover:bg-red-50/50' : checked ? 'bg-blue-50/40' : 'hover:bg-muted/20'}`}>
+    <tr className={`${fechado ? 'bg-red-50/30 hover:bg-red-50/50 dark:bg-red-950/20 dark:hover:bg-red-950/30' : checked ? 'bg-blue-50/40 dark:bg-blue-950/30' : 'hover:bg-muted/20'}`}>
       {canDelete && (
         <td className="p-3 w-10">
           {!fechado && (
@@ -200,6 +201,13 @@ export default function Lancamentos() {
   const [editTarget, setEditTarget] = useState<Row | null>(null);
   const [editForm, setEditForm] = useState({ hospital_id: '', setor_id: '', data_plantao: '', horario_inicio: '', horario_fim: '', tipo_plantao: '' });
   const [saving, setSaving] = useState(false);
+
+  const [bulkEditOpen, setBulkEditOpen] = useState(false);
+  const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
+  const [bulkEditForm, setBulkEditForm] = useState({ hospital_id: '', setor_id: '', horario_inicio: '', horario_fim: '', tipo_plantao: '' });
+  const [bulkOriginal, setBulkOriginal] = useState({ hospital_id: '', setor_id: '', horario_inicio: '', horario_fim: '', tipo_plantao: '' });
+  const [bulkSaving, setBulkSaving] = useState(false);
+  const [bulkErrors, setBulkErrors] = useState<{ label: string; erro: string }[]>([]);
 
   const [importOpen, setImportOpen]       = useState(false);
   const [importRows, setImportRows]       = useState<ImportRow[]>([]);
@@ -364,12 +372,26 @@ export default function Lancamentos() {
       percentual_repasse = Number(editTarget.valor_repasse_cooperado) / Number(editTarget.valor_cobrado_cliente) * 100;
     }
 
+    // A taxa administrativa CADES não depende das horas, só de hospital + profissão + tipo de plantão.
+    // Sempre reconferimos contra a Tabela de Valores pra não deixar o snapshot desatualizado/nulo após a edição.
+    const { data: taxaRow } = await supabase
+      .from('tabela_valores')
+      .select('taxa_administrativa_cades')
+      .eq('hospital_id', hospital_id)
+      .eq('profissao', editTarget.profissao)
+      .eq('tipo_plantao', tipo_plantao)
+      .eq('ativo', true)
+      .limit(1)
+      .maybeSingle();
+    const taxa_administrativa_cades = taxaRow?.taxa_administrativa_cades != null ? Number(taxaRow.taxa_administrativa_cades) : null;
+
     const { error } = await supabase.from('lancamentos_plantoes').update({
       hospital_id, setor_id, data_plantao, horario_inicio, horario_fim,
       tipo_plantao, total_horas,
       valor_cobrado_cliente: Math.round(valor_cobrado_cliente * 100) / 100,
       valor_repasse_cooperado: Math.round(valor_repasse_cooperado * 100) / 100,
       percentual_repasse: Math.round(percentual_repasse * 100) / 100,
+      taxa_administrativa_cades,
     } as never).eq('id', editTarget.id);
 
     setSaving(false);
@@ -379,9 +401,162 @@ export default function Lancamentos() {
     fetchRows();
   };
 
+  // Se todos os plantões selecionados compartilham o mesmo valor num campo, pré-preenche
+  // esse campo com o valor atual (é só conveniência — não muda o comportamento de salvar
+  // apenas o que for alterado). Quando os valores divergem entre os selecionados, o campo
+  // fica em branco ("Vários valores"), pra não aplicar por engano o valor de um só plantão.
+  const valorComumOuVazio = <T,>(rowsSel: Row[], getter: (r: Row) => T | undefined | null): T | '' => {
+    if (rowsSel.length === 0) return '';
+    const primeiro = getter(rowsSel[0]);
+    if (primeiro == null) return '';
+    const todosIguais = rowsSel.every(r => getter(r) === primeiro);
+    return todosIguais ? primeiro : '';
+  };
+
+  const abrirEdicaoEmMassa = () => {
+    const snapshot = {
+      hospital_id: valorComumOuVazio(selectedRows, r => r.hospitals?.id) || '',
+      setor_id: valorComumOuVazio(selectedRows, r => r.sectors?.id) || '',
+      horario_inicio: valorComumOuVazio(selectedRows, r => r.horario_inicio?.slice(0, 5)) || '',
+      horario_fim: valorComumOuVazio(selectedRows, r => r.horario_fim?.slice(0, 5)) || '',
+      tipo_plantao: valorComumOuVazio(selectedRows, r => r.tipo_plantao) || '',
+    };
+    setBulkEditForm(snapshot);
+    setBulkOriginal(snapshot);
+    setBulkEditOpen(true);
+  };
+
+  // Só entram no resumo de confirmação os campos que o usuário de fato mudou em relação
+  // ao valor com que o formulário abriu (evita mostrar como "alteração" um campo que só
+  // veio pré-preenchido porque todos os plantões já compartilhavam aquele valor).
+  const bulkResumoConfirmacao = useMemo(() => {
+    const f = bulkEditForm;
+    const o = bulkOriginal;
+    const campos: { label: string; valor: string }[] = [];
+    if (f.horario_inicio && f.horario_fim && (f.horario_inicio !== o.horario_inicio || f.horario_fim !== o.horario_fim))
+      campos.push({ label: 'Horário', valor: `${f.horario_inicio}–${f.horario_fim}` });
+    if (f.tipo_plantao && f.tipo_plantao !== o.tipo_plantao) campos.push({ label: 'Tipo de plantão', valor: tipoPlantaoLabel[f.tipo_plantao] ?? f.tipo_plantao });
+    if (f.hospital_id && f.hospital_id !== o.hospital_id) campos.push({ label: 'Cliente', valor: hospitals.find(h => h.id === f.hospital_id)?.nome ?? '—' });
+    if (f.setor_id && f.setor_id !== o.setor_id) campos.push({ label: 'Setor', valor: sectors.find(s => s.id === f.setor_id)?.nome ?? '—' });
+    return campos;
+  }, [bulkEditForm, bulkOriginal, hospitals, sectors]);
+
+  const abrirConfirmacaoBulk = () => {
+    const f = bulkEditForm;
+    if ((f.horario_inicio && !f.horario_fim) || (!f.horario_inicio && f.horario_fim))
+      return toast.error('Preencha os dois horários (início e fim) ou deixe ambos em branco');
+    if (bulkResumoConfirmacao.length === 0)
+      return toast.error('Altere ao menos um campo para aplicar em massa');
+    setBulkEditOpen(false);
+    setBulkConfirmOpen(true);
+  };
+
+  const confirmarEdicaoEmMassa = async () => {
+    const f = bulkEditForm;
+    setBulkSaving(true);
+    const erros: { label: string; erro: string }[] = [];
+    const taxaCache = new Map<string, number | null>();
+    let sucesso = 0;
+
+    for (const r of selectedRows) {
+      const label = `${r.cooperados?.nome ?? 'Sem cooperado'} — ${formatDate(r.data_plantao)}`;
+
+      let hospital_id = f.hospital_id || r.hospitals?.id || '';
+      const setor_id = f.setor_id || r.sectors?.id || '';
+      // Se o setor foi trocado sem o cliente ter sido trocado explicitamente, alinha o cliente ao hospital do novo setor
+      if (f.setor_id && !f.hospital_id) {
+        const setorEscolhido = sectors.find(s => s.id === f.setor_id);
+        if (setorEscolhido) hospital_id = setorEscolhido.hospital_id;
+      }
+      const data_plantao = r.data_plantao;
+      const horario_inicio = f.horario_inicio || r.horario_inicio.slice(0, 5);
+      const horario_fim = f.horario_fim || r.horario_fim.slice(0, 5);
+      const tipo_plantao = f.tipo_plantao || r.tipo_plantao;
+
+      if (!hospital_id || !setor_id) { erros.push({ label, erro: 'Cliente/setor inválido' }); continue; }
+
+      const total_horas = calcularHoras(horario_inicio, horario_fim);
+      if (total_horas <= 0) { erros.push({ label, erro: 'Horário inválido' }); continue; }
+
+      const hospitalMudou = hospital_id !== r.hospitals?.id;
+      const tipoMudou = tipo_plantao !== r.tipo_plantao;
+      let valor_cobrado_cliente = Number(r.valor_cobrado_cliente);
+      let valor_repasse_cooperado = Number(r.valor_repasse_cooperado);
+      let percentual_repasse = Number(r.valor_repasse_cooperado) / Number(r.valor_cobrado_cliente) * 100;
+
+      if (hospitalMudou || tipoMudou) {
+        const { data: tv } = await supabase
+          .from('tabela_valores')
+          .select('valor_hora_cliente, percentual_repasse')
+          .eq('hospital_id', hospital_id)
+          .eq('profissao', r.profissao)
+          .eq('tipo_plantao', tipo_plantao)
+          .eq('ativo', true)
+          .limit(1)
+          .maybeSingle();
+        if (!tv) { erros.push({ label, erro: 'Sem tabela de valores para o cliente/tipo escolhido' }); continue; }
+        valor_cobrado_cliente = Number(tv.valor_hora_cliente) * total_horas;
+        percentual_repasse = Number(tv.percentual_repasse);
+        valor_repasse_cooperado = valor_cobrado_cliente * (percentual_repasse / 100);
+      } else if (total_horas !== Number(r.total_horas)) {
+        valor_cobrado_cliente = (valor_cobrado_cliente / Number(r.total_horas)) * total_horas;
+        valor_repasse_cooperado = (valor_repasse_cooperado / Number(r.total_horas)) * total_horas;
+      }
+
+      const taxaKey = `${hospital_id}|${r.profissao}|${tipo_plantao}`;
+      let taxa_administrativa_cades: number | null;
+      if (taxaCache.has(taxaKey)) {
+        taxa_administrativa_cades = taxaCache.get(taxaKey) ?? null;
+      } else {
+        const { data: taxaRow } = await supabase
+          .from('tabela_valores')
+          .select('taxa_administrativa_cades')
+          .eq('hospital_id', hospital_id)
+          .eq('profissao', r.profissao)
+          .eq('tipo_plantao', tipo_plantao)
+          .eq('ativo', true)
+          .limit(1)
+          .maybeSingle();
+        taxa_administrativa_cades = taxaRow?.taxa_administrativa_cades != null ? Number(taxaRow.taxa_administrativa_cades) : null;
+        taxaCache.set(taxaKey, taxa_administrativa_cades);
+      }
+
+      const { error } = await supabase.from('lancamentos_plantoes').update({
+        hospital_id, setor_id, data_plantao, horario_inicio, horario_fim,
+        tipo_plantao, total_horas,
+        valor_cobrado_cliente: Math.round(valor_cobrado_cliente * 100) / 100,
+        valor_repasse_cooperado: Math.round(valor_repasse_cooperado * 100) / 100,
+        percentual_repasse: Math.round(percentual_repasse * 100) / 100,
+        taxa_administrativa_cades,
+      } as never).eq('id', r.id);
+
+      if (error) erros.push({ label, erro: error.message });
+      else sucesso++;
+    }
+
+    setBulkSaving(false);
+    setBulkErrors(erros);
+    if (sucesso > 0) {
+      toast.success(`${sucesso} lançamento${sucesso !== 1 ? 's' : ''} atualizado${sucesso !== 1 ? 's' : ''} com sucesso`);
+      setSelectedIds(new Set());
+      fetchRows();
+    }
+    if (erros.length === 0) {
+      setBulkConfirmOpen(false);
+    } else {
+      toast.error(`${erros.length} lançamento${erros.length !== 1 ? 's' : ''} não p${erros.length !== 1 ? 'uderam' : 'ôde'} ser atualizado${erros.length !== 1 ? 's' : ''}`);
+    }
+  };
+
   const editSetores = useMemo(() =>
     editForm.hospital_id ? sectors.filter(s => s.hospital_id === editForm.hospital_id) : sectors,
   [sectors, editForm.hospital_id]);
+
+  const bulkSetores = useMemo(() =>
+    bulkEditForm.hospital_id ? sectors.filter(s => s.hospital_id === bulkEditForm.hospital_id) : sectors,
+  [sectors, bulkEditForm.hospital_id]);
+
+  const selectedRows = useMemo(() => rows.filter(r => selectedIds.has(r.id)), [rows, selectedIds]);
 
   const toggleSelect = (id: string, v: boolean) =>
     setSelectedIds(prev => { const s = new Set(prev); v ? s.add(id) : s.delete(id); return s; });
@@ -450,9 +625,9 @@ export default function Lancamentos() {
 
     const { data: tvData } = await supabase
       .from('tabela_valores')
-      .select('hospital_id, profissao, tipo_plantao, valor_hora_cliente, percentual_repasse, valor_hora_cooperado')
+      .select('hospital_id, profissao, tipo_plantao, valor_hora_cliente, percentual_repasse, valor_hora_cooperado, taxa_administrativa_cades')
       .eq('ativo', true);
-    const tv = tvData ?? [];
+    const tv = (tvData ?? []) as any[];
 
     const profMap = new Map<string, string>();
     Object.entries(profissaoLabel).forEach(([k, v]) => {
@@ -471,7 +646,8 @@ export default function Lancamentos() {
         : +(valor_hora_cliente * Number(t.percentual_repasse) / 100).toFixed(2);
       const percentual_repasse      = valor_hora_cliente > 0 ? (valorHoraCooperado / valor_hora_cliente) * 100 : Number(t.percentual_repasse);
       const valor_repasse_cooperado = Math.round(horas * valorHoraCooperado * 100) / 100;
-      return { valor_hora_cliente, valor_cobrado_cliente, valor_repasse_cooperado, percentual_repasse };
+      const taxa_administrativa_cades = t.taxa_administrativa_cades != null ? Number(t.taxa_administrativa_cades) : null;
+      return { valor_hora_cliente, valor_cobrado_cliente, valor_repasse_cooperado, percentual_repasse, taxa_administrativa_cades };
     };
 
     const linhas = data.slice(1).filter(row => row.some((c: any) => c !== '' && c !== null && c !== undefined));
@@ -505,14 +681,16 @@ export default function Lancamentos() {
       const horario_inicio = tipo_plantao === 'normal' ? '07:00' : tipo_plantao === 'extra' ? '19:00' : tipo_plantao === 'diarista' ? '07:00' : undefined;
       const horario_fim    = tipo_plantao === 'normal' ? '19:00' : tipo_plantao === 'extra' ? '07:00' : tipo_plantao === 'diarista' ? '19:00' : undefined;
 
+      // Profissão do lançamento vem sempre do cadastro do cooperado (agora texto livre, sem lista fixa);
+      // o profMap só serve de fallback/validação quando o cooperado não foi encontrado na planilha.
+      const coopProfissao = cooperado?.profissao;
       const profissao = profMap.get(normStr(String(prof_raw ?? '')));
-      if (!profissao) erros.push(`Profissão inválida: "${prof_raw}"`);
+      if (!coopProfissao && !profissao) erros.push(`Profissão inválida: "${prof_raw}"`);
 
       const total_horas = horario_inicio && horario_fim ? calcularHoras(horario_inicio, horario_fim) : undefined;
 
       const tipoLabel = tipo_plantao === 'normal' ? 'Diurno' : tipo_plantao === 'extra' ? 'Noturno' : tipo_plantao === 'diarista' ? 'Diarista' : (tipo_plantao ?? String(tipo_raw));
       if (tipo_plantao === 'diarista') avisos.push('Plantão Diarista — verifique se o valor está correto antes de importar');
-      const coopProfissao = cooperado?.profissao;
       const vals = calcVals(hospital?.id ?? '', coopProfissao, tipo_plantao, total_horas, erros, `${coopProfissao ?? prof_raw} / ${tipoLabel}`);
 
       return {
@@ -585,6 +763,7 @@ export default function Lancamentos() {
       valor_cobrado_cliente: r.valor_cobrado_cliente!,
       valor_repasse_cooperado: r.valor_repasse_cooperado!,
       percentual_repasse: r.percentual_repasse!,
+      taxa_administrativa_cades: r.taxa_administrativa_cades ?? null,
       status: 'lancado',
     }));
     const { error } = await supabase.from('lancamentos_plantoes').insert(payload as never);
@@ -712,6 +891,9 @@ export default function Lancamentos() {
           </div>
           <div className="flex gap-2">
             <Button size="sm" variant="outline" onClick={() => setSelectedIds(new Set())}>Cancelar seleção</Button>
+            <Button size="sm" variant="outline" className="gap-1.5" onClick={abrirEdicaoEmMassa}>
+              <Pencil className="h-3.5 w-3.5" /> Editar selecionados
+            </Button>
             <Button size="sm" variant="destructive" className="gap-1.5" onClick={() => setConfirmBulk(true)}>
               <Trash2 className="h-3.5 w-3.5" /> Excluir selecionados
             </Button>
@@ -882,6 +1064,108 @@ export default function Lancamentos() {
         </DialogContent>
       </Dialog>
 
+      {/* Edição em massa — formulário */}
+      <Dialog open={bulkEditOpen} onOpenChange={o => !o && setBulkEditOpen(false)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Editar {selectedIds.size} lançamento{selectedIds.size !== 1 ? 's' : ''} selecionado{selectedIds.size !== 1 ? 's' : ''}</DialogTitle>
+          </DialogHeader>
+          <p className="text-xs text-muted-foreground -mt-2">
+            Os campos já vêm preenchidos quando todos os plantões selecionados têm o mesmo valor. Campos com
+            valores diferentes entre os plantões aparecem em branco ("Vários valores"). Altere apenas o que
+            quiser mudar — o resto permanece exatamente como está.
+          </p>
+          <div className="space-y-3 py-2">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">Horário início</Label>
+                <Input type="time" value={bulkEditForm.horario_inicio}
+                  onChange={e => setBulkEditForm(p => ({ ...p, horario_inicio: e.target.value }))} />
+              </div>
+              <div>
+                <Label className="text-xs">Horário fim</Label>
+                <Input type="time" value={bulkEditForm.horario_fim}
+                  onChange={e => setBulkEditForm(p => ({ ...p, horario_fim: e.target.value }))} />
+              </div>
+            </div>
+            <div>
+              <Label className="text-xs">Tipo de plantão</Label>
+              <Select value={bulkEditForm.tipo_plantao} onValueChange={v => setBulkEditForm(p => ({ ...p, tipo_plantao: v }))}>
+                <SelectTrigger><SelectValue placeholder="Vários valores" /></SelectTrigger>
+                <SelectContent>
+                  {tipoPlantaoOptions.map(o => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs">Cliente</Label>
+              <Select value={bulkEditForm.hospital_id} onValueChange={v => setBulkEditForm(p => ({ ...p, hospital_id: v, setor_id: '' }))}>
+                <SelectTrigger><SelectValue placeholder="Vários valores" /></SelectTrigger>
+                <SelectContent>
+                  {hospitals.map(h => <SelectItem key={h.id} value={h.id}>{h.nome}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs">Setor</Label>
+              <Select value={bulkEditForm.setor_id} onValueChange={v => setBulkEditForm(p => ({ ...p, setor_id: v }))}>
+                <SelectTrigger><SelectValue placeholder="Vários valores" /></SelectTrigger>
+                <SelectContent>
+                  {bulkSetores.map(s => <SelectItem key={s.id} value={s.id}>{s.nome}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBulkEditOpen(false)}>Cancelar</Button>
+            <Button onClick={abrirConfirmacaoBulk}>Salvar alterações</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edição em massa — confirmação */}
+      <AlertDialog open={bulkConfirmOpen} onOpenChange={o => { if (!o) { setBulkConfirmOpen(false); setBulkErrors([]); } }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirmar alteração em massa</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-3">
+                <p>
+                  Você está prestes a alterar <strong>{selectedIds.size} lançamento{selectedIds.size !== 1 ? 's' : ''}</strong>. Deseja continuar?
+                </p>
+                <div className="rounded-md border p-3 text-sm space-y-1">
+                  {(['Horário', 'Tipo de plantão', 'Cliente', 'Setor'] as const).map(campo => {
+                    const alterado = bulkResumoConfirmacao.find(c => c.label === campo);
+                    return (
+                      <div key={campo} className="flex justify-between gap-2">
+                        <span className="text-muted-foreground">{campo}:</span>
+                        {alterado
+                          ? <span className="font-medium text-foreground">{alterado.valor}</span>
+                          : <span className="text-muted-foreground italic">não será alterado</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+                {bulkErrors.length > 0 && (
+                  <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs space-y-1 max-h-40 overflow-y-auto">
+                    <p className="font-medium text-destructive">Alguns lançamentos não puderam ser atualizados:</p>
+                    {bulkErrors.map((er, i) => (
+                      <p key={i} className="text-destructive/90">{er.label}: {er.erro}</p>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setBulkErrors([])}>Cancelar</AlertDialogCancel>
+            <Button onClick={confirmarEdicaoEmMassa} disabled={bulkSaving}>
+              {bulkSaving ? 'Salvando…' : 'Confirmar alterações'}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {/* Modal de importação via planilha */}
       <Dialog open={importOpen} onOpenChange={o => !o && fecharImport()}>
         <DialogContent className="max-w-4xl max-h-[88vh] flex flex-col gap-4">
@@ -1005,7 +1289,7 @@ export default function Lancamentos() {
                       const ok   = row.erros.length === 0;
                       const isDup = row.erros.some(e => e.startsWith('Já lançado') || e.startsWith('Duplicado'));
                       return (
-                        <tr key={row.linha} className={ok ? '' : isDup ? 'bg-amber-50/70' : 'bg-red-50/60'}>
+                        <tr key={row.linha} className={ok ? '' : isDup ? 'bg-amber-50/70 dark:bg-amber-950/25' : 'bg-red-50/60 dark:bg-red-950/25'}>
                           <td className="px-3 py-2 text-muted-foreground">{row.linha}</td>
                           <td className="px-3 py-2 font-medium">{row.cooperado_nome}</td>
                           <td className="px-3 py-2">

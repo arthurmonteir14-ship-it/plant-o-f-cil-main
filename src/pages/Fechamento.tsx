@@ -5,10 +5,11 @@ import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import {
-  Download, FileText, Eye, Send, CheckCircle, AlertCircle, Clock, RefreshCw, SendHorizonal, X, Receipt, Lock, Unlock,
+  Download, FileText, Eye, Send, CheckCircle, AlertCircle, Clock, RefreshCw, SendHorizonal, X, Receipt, Lock, Unlock, Plus, Shirt,
 } from 'lucide-react';
 import { formatCurrency, profissaoLabel, tipoPlantaoLabel, DESCONTO_COTA_PARTE } from '@/lib/format';
 import { exportarRelatorioExcel } from '@/lib/exportExcel';
@@ -22,8 +23,10 @@ import autoTable from 'jspdf-autotable';
 
 interface LancRow {
   id: string; data_plantao: string; total_horas: number;
+  horario_inicio: string; horario_fim: string;
   profissao: string; tipo_plantao: string; status: string;
   valor_cobrado_cliente: number; valor_repasse_cooperado: number;
+  taxa_administrativa_cades: number | null;
   cooperados: { id: string; nome: string } | null;
   hospitals: { id: string; nome: string } | null;
   sectors: { id: string; nome: string } | null;
@@ -48,11 +51,55 @@ interface CompetenciaFechada {
   periodo_inicio: string; periodo_fim: string; fechado_em: string;
 }
 
+interface DescontoUniforme {
+  id: string; cooperado_id: string;
+  valor_total: number; parcelas: number; valor_parcela: number;
+  competencia_inicio: string; observacao: string | null; ativo: boolean;
+}
+
 // ─── Constantes RPA ───────────────────────────────────────────────────────────
 
 const PERCENTUAL_INSS = 0.20;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+interface DescontoTaxaCategoria { label: string; percentual: number; valor: number; }
+
+// Calcula a Taxa Administrativa CADES por categoria/atividade (profissão + tipo de plantão),
+// aplicada plantão a plantão sobre o valor já líquido de INSS, usando a taxa que estava
+// vigente no momento de cada lançamento (snapshot em lancamentos_plantoes.taxa_administrativa_cades).
+// Só entram categorias com taxa cadastrada — os demais plantões do cooperado não são afetados.
+function calcularDescontoTaxaAdministrativa(lancamentos: LancRow[]): { porCategoria: DescontoTaxaCategoria[]; total: number } {
+  const porChave = new Map<string, DescontoTaxaCategoria>();
+  lancamentos.forEach(r => {
+    if (r.taxa_administrativa_cades == null) return;
+    const valorAposInss = Number(r.valor_repasse_cooperado) * (1 - PERCENTUAL_INSS);
+    const desconto = valorAposInss * (Number(r.taxa_administrativa_cades) / 100);
+    const chave = `${r.profissao}|${r.tipo_plantao}`;
+    const label = `${profissaoLabel[r.profissao] ?? r.profissao} — ${tipoPlantaoLabel[r.tipo_plantao] ?? r.tipo_plantao}`;
+    const atual = porChave.get(chave) ?? { label, percentual: Number(r.taxa_administrativa_cades), valor: 0 };
+    atual.valor += desconto;
+    porChave.set(chave, atual);
+  });
+  const porCategoria = [...porChave.values()].sort((a, b) => a.label.localeCompare(b.label));
+  const total = porCategoria.reduce((s, c) => s + c.valor, 0);
+  return { porCategoria, total };
+}
+
+// Retorna a parcela do Desconto de Uniforme vigente para o cooperado na competência informada
+// ('YYYY-MM'), ou null se ele não tiver plano ativo ou se a competência estiver fora do intervalo
+// de parcelas (antes do início ou depois de já ter pago todas).
+function calcularDescontoUniforme(
+  cooperadoId: string, competenciaAtual: string, descontos: DescontoUniforme[],
+): { valor: number; parcelaAtual: number; parcelas: number } | null {
+  const plano = descontos.find(d => d.ativo && d.cooperado_id === cooperadoId);
+  if (!plano) return null;
+  const [anoIni, mesIni] = plano.competencia_inicio.split('-').map(Number);
+  const [anoAtu, mesAtu] = competenciaAtual.split('-').map(Number);
+  const parcelaAtual = (anoAtu * 12 + mesAtu) - (anoIni * 12 + mesIni) + 1;
+  if (parcelaAtual < 1 || parcelaAtual > plano.parcelas) return null;
+  return { valor: plano.valor_parcela, parcelaAtual, parcelas: plano.parcelas };
+}
 
 const fmt = (v: number) =>
   new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v);
@@ -179,17 +226,21 @@ function exportCSV(rows: LancRow[], aba: 'cobranca' | 'repasse', periodoLabel: s
 
 // ─── PDF RPA Individual ───────────────────────────────────────────────────────
 
-async function gerarPDFRPA(cooperado: Cooperado, lancamentos: LancRow[], periodoLabel: string, download = true, descInss = false, descCotaParte = false): Promise<jsPDF> {
-  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+async function gerarPDFRPA(cooperado: Cooperado, lancamentos: LancRow[], periodoLabel: string, download = true, descInss = false, descCotaParte = false, descTaxaAdm = false, descUniforme = false, uniforme: { valor: number; parcelaAtual: number; parcelas: number } | null = null, existingDoc?: jsPDF): Promise<jsPDF> {
+  const doc = existingDoc ?? new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  if (existingDoc) doc.addPage('a4', 'portrait');
   const W = doc.internal.pageSize.getWidth();
   const H = doc.internal.pageSize.getHeight();
   const ML = 14; const MR = 14; const CW = W - ML - MR;
 
-  const valorBruto     = lancamentos.reduce((s, r) => s + Number(r.valor_repasse_cooperado), 0);
-  const descontoINSS   = descInss      ? valorBruto * PERCENTUAL_INSS : 0;
-  const descontoCota   = descCotaParte ? DESCONTO_COTA_PARTE          : 0;
-  const totalDescontos = descontoINSS + descontoCota;
-  const valorLiquido   = valorBruto - totalDescontos;
+  const valorBruto      = lancamentos.reduce((s, r) => s + Number(r.valor_repasse_cooperado), 0);
+  const descontoINSS    = descInss      ? valorBruto * PERCENTUAL_INSS : 0;
+  const descontoCota    = descCotaParte ? DESCONTO_COTA_PARTE          : 0;
+  const taxaAdmCalc     = calcularDescontoTaxaAdministrativa(lancamentos);
+  const descontoTaxaAdm = descTaxaAdm ? taxaAdmCalc.total : 0;
+  const descontoUniforme = descUniforme && uniforme ? uniforme.valor : 0;
+  const totalDescontos  = descontoINSS + descontoCota + descontoTaxaAdm + descontoUniforme;
+  const valorLiquido    = valorBruto - totalDescontos;
   const totalHoras = lancamentos.reduce((s, r) => s + Number(r.total_horas), 0);
   const valorHoraMedio = totalHoras > 0 ? valorBruto / totalHoras : 0;
   const slug = (s: string) => s.replace(/[^a-zA-Z0-9]/g, '_');
@@ -312,16 +363,25 @@ async function gerarPDFRPA(cooperado: Cooperado, lancamentos: LancRow[], periodo
   // ── §4 Apuração ──
   drawSection('04', 'APURAÇÃO DE VALORES');
   const halfW = CW / 2; const lRowH = 10;
-  const ledgerRows = [
-    { label: 'Valor Bruto dos Serviços', value: fmt(valorBruto), col: 0, subtotal: true },
-    { label: 'Total de Descontos', value: totalDescontos > 0 ? `− ${fmt(totalDescontos)}` : '—', col: 1, subtotal: true, negative: totalDescontos > 0 },
-    { label: 'Quantidade de plantões', value: String(lancamentos.length).padStart(2, '0'), col: 0 },
-    { label: `INSS (${(PERCENTUAL_INSS * 100).toFixed(0)}%)`, value: descInss ? `− ${fmt(descontoINSS)}` : 'Não aplicado', col: 1, negative: descInss, zero: !descInss },
-    { label: 'Valor-hora médio apurado', value: `${fmt(valorHoraMedio)} / h`, col: 0 },
-    { label: 'Cota-parte cooperativa', value: descCotaParte ? `− ${fmt(descontoCota)}` : 'Não aplicada', col: 1, negative: descCotaParte, zero: !descCotaParte },
+  type LedgerCell = { label: string; value: string; subtotal?: boolean; negative?: boolean; zero?: boolean };
+  const filaEsquerda: LedgerCell[] = [
+    { label: 'Valor Bruto dos Serviços', value: fmt(valorBruto), subtotal: true },
+    { label: 'Quantidade de plantões', value: String(lancamentos.length).padStart(2, '0') },
+    { label: 'Valor-hora médio apurado', value: `${fmt(valorHoraMedio)} / h` },
   ];
-  ledgerRows.forEach((lr, i) => {
-    const row = Math.floor(i / 2); const x = ML + lr.col * halfW; const ly = y + row * lRowH;
+  const filaDireita: LedgerCell[] = [
+    { label: 'Total de Descontos', value: totalDescontos > 0 ? `− ${fmt(totalDescontos)}` : '—', subtotal: true, negative: totalDescontos > 0 },
+    { label: `INSS (${(PERCENTUAL_INSS * 100).toFixed(0)}%)`, value: descInss ? `− ${fmt(descontoINSS)}` : 'Não aplicado', negative: descInss, zero: !descInss },
+    { label: 'Cota-parte cooperativa', value: descCotaParte ? `− ${fmt(descontoCota)}` : 'Não aplicada', negative: descCotaParte, zero: !descCotaParte },
+    ...(taxaAdmCalc.porCategoria.length === 0
+      ? []
+      : [{ label: 'Taxa Adm. CADES', value: descTaxaAdm ? `− ${fmt(taxaAdmCalc.total)}` : 'Não aplicada', negative: descTaxaAdm, zero: !descTaxaAdm }]),
+    ...(!uniforme
+      ? []
+      : [{ label: `Desconto Uniforme (${uniforme.parcelaAtual}/${uniforme.parcelas})`, value: descUniforme ? `− ${fmt(uniforme.valor)}` : 'Não aplicado', negative: descUniforme, zero: !descUniforme }]),
+  ];
+  const numLedgerRows = Math.max(filaEsquerda.length, filaDireita.length);
+  const desenharCelula = (lr: LedgerCell, x: number, ly: number) => {
     if (lr.subtotal) { doc.setFillColor(250, 250, 250); doc.rect(x, ly, halfW, lRowH, 'F'); }
     doc.setDrawColor(229, 229, 229); doc.rect(x, ly, halfW, lRowH);
     doc.setFontSize(7.5); doc.setFont('helvetica', lr.subtotal ? 'bold' : 'normal'); doc.setTextColor(74, 74, 74);
@@ -329,8 +389,13 @@ async function gerarPDFRPA(cooperado: Cooperado, lancamentos: LancRow[], periodo
     const valColor: [number, number, number] = lr.negative ? [220, 38, 38] : lr.zero ? [122, 122, 122] : [26, 26, 26];
     doc.setTextColor(...valColor); doc.setFont('helvetica', lr.subtotal ? 'bold' : 'normal');
     doc.text(lr.value, x + halfW - 3, ly + 6.5, { align: 'right' });
-  });
-  y += Math.ceil(ledgerRows.length / 2) * lRowH + 6;
+  };
+  for (let row = 0; row < numLedgerRows; row++) {
+    const ly = y + row * lRowH;
+    if (filaEsquerda[row]) desenharCelula(filaEsquerda[row], ML, ly);
+    if (filaDireita[row])  desenharCelula(filaDireita[row], ML + halfW, ly);
+  }
+  y += numLedgerRows * lRowH + 6;
 
   // Se não há espaço para net block + §5 (≈90mm), abre nova página
   if (y + 90 > H - 14) { doc.addPage(); y = 16; }
@@ -393,10 +458,10 @@ async function gerarPDFRPA(cooperado: Cooperado, lancamentos: LancRow[], periodo
 
 // ─── Envio de e-mail via Edge Function ────────────────────────────────────────
 
-async function enviarRPAEmail(cooperado: Cooperado, lancamentos: LancRow[], periodoLabel: string, descInss = false, descCotaParte = false): Promise<{ success: boolean; error?: string }> {
+async function enviarRPAEmail(cooperado: Cooperado, lancamentos: LancRow[], periodoLabel: string, descInss = false, descCotaParte = false, descTaxaAdm = false, descUniforme = false, uniforme: { valor: number; parcelaAtual: number; parcelas: number } | null = null): Promise<{ success: boolean; error?: string }> {
   if (!cooperado.email) return { success: false, error: 'E-mail não cadastrado para este cooperado.' };
   try {
-    const doc = await gerarPDFRPA(cooperado, lancamentos, periodoLabel, false, descInss, descCotaParte);
+    const doc = await gerarPDFRPA(cooperado, lancamentos, periodoLabel, false, descInss, descCotaParte, descTaxaAdm, descUniforme, uniforme);
     const slug = (s: string) => s.replace(/[^a-zA-Z0-9]/g, '_');
     const pdfName = `RPA_${slug(cooperado.nome)}_${slug(periodoLabel)}.pdf`;
     const pdfBase64 = doc.output('datauristring').split(',')[1];
@@ -412,15 +477,19 @@ async function enviarRPAEmail(cooperado: Cooperado, lancamentos: LancRow[], peri
 
 // ─── Modal de Visualização da RPA ─────────────────────────────────────────────
 
-function ModalVisualizarRPA({ open, onClose, cooperado, lancamentos, periodoLabel, descInss, descCotaParte }: {
+function ModalVisualizarRPA({ open, onClose, cooperado, lancamentos, periodoLabel, descInss, descCotaParte, descTaxaAdm, descUniforme, uniforme }: {
   open: boolean; onClose: () => void;
   cooperado: Cooperado; lancamentos: LancRow[]; periodoLabel: string;
-  descInss: boolean; descCotaParte: boolean;
+  descInss: boolean; descCotaParte: boolean; descTaxaAdm: boolean;
+  descUniforme: boolean; uniforme: { valor: number; parcelaAtual: number; parcelas: number } | null;
 }) {
-  const valorBruto   = lancamentos.reduce((s, r) => s + Number(r.valor_repasse_cooperado), 0);
-  const descontoINSS = descInss      ? valorBruto * PERCENTUAL_INSS : 0;
-  const descontoCota = descCotaParte ? DESCONTO_COTA_PARTE          : 0;
-  const totalDescontos = descontoINSS + descontoCota;
+  const valorBruto      = lancamentos.reduce((s, r) => s + Number(r.valor_repasse_cooperado), 0);
+  const descontoINSS    = descInss      ? valorBruto * PERCENTUAL_INSS : 0;
+  const descontoCota    = descCotaParte ? DESCONTO_COTA_PARTE          : 0;
+  const taxaAdmCalc     = calcularDescontoTaxaAdministrativa(lancamentos);
+  const descontoTaxaAdm = descTaxaAdm ? taxaAdmCalc.total : 0;
+  const descontoUniforme = descUniforme && uniforme ? uniforme.valor : 0;
+  const totalDescontos  = descontoINSS + descontoCota + descontoTaxaAdm + descontoUniforme;
   const valorLiquido = valorBruto - totalDescontos;
   const totalHoras = lancamentos.reduce((s, r) => s + Number(r.total_horas), 0);
   const valorHoraMedio = totalHoras > 0 ? valorBruto / totalHoras : 0;
@@ -539,14 +608,29 @@ function ModalVisualizarRPA({ open, onClose, cooperado, lancamentos, periodoLabe
                 <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Apuração de Valores</span>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', borderTop: `1px solid ${lineColor}`, borderLeft: `1px solid ${lineColor}` }}>
-                {[
-                  { label: 'Valor Bruto dos Serviços', value: fmt(valorBruto), subtotal: true },
-                  { label: 'Total de Descontos', value: totalDescontos > 0 ? `− ${fmt(totalDescontos)}` : '—', subtotal: true, negative: totalDescontos > 0 },
-                  { label: 'Quantidade de plantões', value: String(lancamentos.length).padStart(2, '0'), subtotal: false },
-                  { label: `INSS (${(PERCENTUAL_INSS * 100).toFixed(0)}%)`, value: descInss ? `− ${fmt(descontoINSS)}` : 'Não aplicado', subtotal: false, negative: descInss, zero: !descInss },
-                  { label: 'Valor-hora médio apurado', value: `${fmt(valorHoraMedio)} / h`, subtotal: false },
-                  { label: 'Cota-parte cooperativa', value: descCotaParte ? `− ${fmt(descontoCota)}` : 'Não aplicada', subtotal: false, negative: descCotaParte, zero: !descCotaParte },
-                ].map((lr, i) => (
+                {(() => {
+                  const filaEsquerda = [
+                    { label: 'Valor Bruto dos Serviços', value: fmt(valorBruto), subtotal: true },
+                    { label: 'Quantidade de plantões', value: String(lancamentos.length).padStart(2, '0'), subtotal: false },
+                    { label: 'Valor-hora médio apurado', value: `${fmt(valorHoraMedio)} / h`, subtotal: false },
+                  ];
+                  const filaDireita = [
+                    { label: 'Total de Descontos', value: totalDescontos > 0 ? `− ${fmt(totalDescontos)}` : '—', subtotal: true, negative: totalDescontos > 0 },
+                    { label: `INSS (${(PERCENTUAL_INSS * 100).toFixed(0)}%)`, value: descInss ? `− ${fmt(descontoINSS)}` : 'Não aplicado', subtotal: false, negative: descInss, zero: !descInss },
+                    { label: 'Cota-parte cooperativa', value: descCotaParte ? `− ${fmt(descontoCota)}` : 'Não aplicada', subtotal: false, negative: descCotaParte, zero: !descCotaParte },
+                    ...(taxaAdmCalc.porCategoria.length === 0
+                      ? []
+                      : [{ label: 'Taxa Adm. CADES', value: descTaxaAdm ? `− ${fmt(taxaAdmCalc.total)}` : 'Não aplicada', subtotal: false, negative: descTaxaAdm, zero: !descTaxaAdm }]),
+                    ...(!uniforme
+                      ? []
+                      : [{ label: `Desconto Uniforme (${uniforme.parcelaAtual}/${uniforme.parcelas})`, value: descUniforme ? `− ${fmt(uniforme.valor)}` : 'Não aplicado', subtotal: false, negative: descUniforme, zero: !descUniforme }]),
+                  ];
+                  const numRows = Math.max(filaEsquerda.length, filaDireita.length);
+                  return Array.from({ length: numRows }, (_, r) => [
+                    filaEsquerda[r] ?? { label: '', value: '', subtotal: false },
+                    filaDireita[r]  ?? { label: '', value: '', subtotal: false },
+                  ]).flat();
+                })().map((lr, i) => (
                   <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr auto', alignItems: 'baseline', padding: '10px 14px', borderRight: `1px solid ${lineColor}`, borderBottom: `1px solid ${lineColor}`, gap: 16, background: lr.subtotal ? '#fafafa' : undefined, borderTop: lr.subtotal ? `1px solid #1a1a1a` : undefined }}>
                     <span style={{ fontSize: 11, color: inkLight, fontWeight: lr.subtotal ? 600 : 400, textTransform: lr.subtotal ? 'uppercase' : undefined, letterSpacing: lr.subtotal ? '0.08em' : undefined }}>{lr.label}</span>
                     <span style={{ fontFamily: 'monospace', fontSize: 12.5, fontWeight: lr.subtotal ? 600 : 500, color: (lr as any).negative ? '#dc2626' : (lr as any).zero ? inkLighter : '#1a1a1a', whiteSpace: 'nowrap' }}>{lr.value}</span>
@@ -606,7 +690,7 @@ function ModalVisualizarRPA({ open, onClose, cooperado, lancamentos, periodoLabe
 
         <div className="flex justify-end gap-2 px-5 pb-5">
           <Button variant="outline" onClick={onClose}>Fechar</Button>
-          <Button onClick={() => { void gerarPDFRPA(cooperado, lancamentos, periodoLabel, true, descInss, descCotaParte); }}>
+          <Button onClick={() => { void gerarPDFRPA(cooperado, lancamentos, periodoLabel, true, descInss, descCotaParte, descTaxaAdm, descUniforme, uniforme); }}>
             <Download className="h-4 w-4 mr-2" /> Baixar PDF
           </Button>
         </div>
@@ -617,22 +701,26 @@ function ModalVisualizarRPA({ open, onClose, cooperado, lancamentos, periodoLabe
 
 // ─── Card de Cooperado para RPA ───────────────────────────────────────────────
 
-function CardCooperadoRPA({ cooperado, lancamentos, periodoLabel, status, onStatusChange, descInss, descCotaParte }: {
+function CardCooperadoRPA({ cooperado, lancamentos, periodoLabel, status, onStatusChange, descInss, descCotaParte, descTaxaAdm, descUniforme, uniforme }: {
   cooperado: Cooperado; lancamentos: LancRow[]; periodoLabel: string;
   status: StatusRPA; onStatusChange: (s: StatusRPA) => void;
-  descInss: boolean; descCotaParte: boolean;
+  descInss: boolean; descCotaParte: boolean; descTaxaAdm: boolean;
+  descUniforme: boolean; uniforme: { valor: number; parcelaAtual: number; parcelas: number } | null;
 }) {
   const [showModal, setShowModal] = useState(false);
   const [sending, setSending] = useState(false);
 
-  const valorBruto   = lancamentos.reduce((s, r) => s + Number(r.valor_repasse_cooperado), 0);
-  const descontoINSS = descInss      ? valorBruto * PERCENTUAL_INSS : 0;
-  const descontoCota = descCotaParte ? DESCONTO_COTA_PARTE          : 0;
-  const valorLiquido = valorBruto - descontoINSS - descontoCota;
+  const valorBruto      = lancamentos.reduce((s, r) => s + Number(r.valor_repasse_cooperado), 0);
+  const descontoINSS    = descInss      ? valorBruto * PERCENTUAL_INSS : 0;
+  const descontoCota    = descCotaParte ? DESCONTO_COTA_PARTE          : 0;
+  const taxaAdmCalc     = calcularDescontoTaxaAdministrativa(lancamentos);
+  const descontoTaxaAdm = descTaxaAdm ? taxaAdmCalc.total : 0;
+  const descontoUniforme = descUniforme && uniforme ? uniforme.valor : 0;
+  const valorLiquido    = valorBruto - descontoINSS - descontoCota - descontoTaxaAdm - descontoUniforme;
 
   const handleEnviar = async () => {
     setSending(true);
-    const result = await enviarRPAEmail(cooperado, lancamentos, periodoLabel, descInss, descCotaParte);
+    const result = await enviarRPAEmail(cooperado, lancamentos, periodoLabel, descInss, descCotaParte, descTaxaAdm, descUniforme, uniforme);
     setSending(false);
     if (result.success) { onStatusChange('enviado'); toast.success(`RPA enviada para ${cooperado.email}`); }
     else { onStatusChange('erro'); toast.error(result.error ?? 'Erro ao enviar RPA'); }
@@ -663,8 +751,10 @@ function CardCooperadoRPA({ cooperado, lancamentos, periodoLabel, status, onStat
             <div className="flex justify-between text-xs"><span className="text-muted-foreground">Valor Bruto</span><span className="tabular-nums">{fmt(valorBruto)}</span></div>
             {descInss && <div className="flex justify-between text-xs text-red-600"><span>(-) INSS 20%</span><span className="tabular-nums">({fmt(descontoINSS)})</span></div>}
             {descCotaParte && <div className="flex justify-between text-xs text-red-600"><span>(-) Cota Parte</span><span className="tabular-nums">({fmt(descontoCota)})</span></div>}
+            {descTaxaAdm && <div className="flex justify-between text-xs text-red-600"><span>(-) Taxa Adm. CADES</span><span className="tabular-nums">({fmt(taxaAdmCalc.total)})</span></div>}
+            {descUniforme && uniforme && <div className="flex justify-between text-xs text-red-600"><span>(-) Desconto Uniforme ({uniforme.parcelaAtual}/{uniforme.parcelas})</span><span className="tabular-nums">({fmt(uniforme.valor)})</span></div>}
             <div className="border-t border-border/60 pt-1.5 flex justify-between">
-              <span className="text-sm font-bold text-primary">{(descInss || descCotaParte) ? 'Valor Líquido' : 'Valor a Receber'}</span>
+              <span className="text-sm font-bold text-primary">{(descInss || descCotaParte || descTaxaAdm || descUniforme) ? 'Valor Líquido' : 'Valor a Receber'}</span>
               <span className="text-sm font-bold text-primary tabular-nums">{fmt(valorLiquido)}</span>
             </div>
           </div>
@@ -676,7 +766,7 @@ function CardCooperadoRPA({ cooperado, lancamentos, periodoLabel, status, onStat
             <Button variant="outline" size="sm" className="gap-1 text-xs px-2" onClick={() => setShowModal(true)}>
               <Eye className="h-3.5 w-3.5" /><span className="hidden sm:inline">Visualizar</span><span className="sm:hidden">Ver</span>
             </Button>
-            <Button variant="outline" size="sm" className="gap-1 text-xs px-2" onClick={() => { void gerarPDFRPA(cooperado, lancamentos, periodoLabel, true, descInss, descCotaParte); }}>
+            <Button variant="outline" size="sm" className="gap-1 text-xs px-2" onClick={() => { void gerarPDFRPA(cooperado, lancamentos, periodoLabel, true, descInss, descCotaParte, descTaxaAdm, descUniforme, uniforme); }}>
               <FileText className="h-3.5 w-3.5" /><span>PDF</span>
             </Button>
             <Button size="sm" className={`gap-1 text-xs px-2 ${status === 'enviado' ? 'bg-green-600 hover:bg-green-700' : ''}`}
@@ -688,20 +778,70 @@ function CardCooperadoRPA({ cooperado, lancamentos, periodoLabel, status, onStat
           </div>
         </CardContent>
       </Card>
-      {showModal && <ModalVisualizarRPA open={showModal} onClose={() => setShowModal(false)} cooperado={cooperado} lancamentos={lancamentos} periodoLabel={periodoLabel} descInss={descInss} descCotaParte={descCotaParte} />}
+      {showModal && <ModalVisualizarRPA open={showModal} onClose={() => setShowModal(false)} cooperado={cooperado} lancamentos={lancamentos} periodoLabel={periodoLabel} descInss={descInss} descCotaParte={descCotaParte} descTaxaAdm={descTaxaAdm} descUniforme={descUniforme} uniforme={uniforme} />}
     </>
   );
 }
 
 // ─── Aba RPA ──────────────────────────────────────────────────────────────────
 
-function AbaRPA({ rows, hospitals, sectors, cooperados, periodoLabel }: { rows: LancRow[]; hospitals: Hospital[]; sectors: Sector[]; cooperados: Cooperado[]; periodoLabel: string; }) {
+function AbaRPA({ rows, hospitals, sectors, cooperados, periodoLabel, periodoInicio }: { rows: LancRow[]; hospitals: Hospital[]; sectors: Sector[]; cooperados: Cooperado[]; periodoLabel: string; periodoInicio: string; }) {
   const [rpaStatus, setRpaStatus] = useState<Record<string, StatusRPA>>({});
   const [filterHospital, setFilterHospital] = useState('all');
   const [filterSetor, setFilterSetor] = useState('all');
   const [filterCooperado, setFilterCooperado] = useState('all');
   const [descInss, setDescInss] = useState(false);
   const [descCotaParte, setDescCotaParte] = useState(false);
+  const [descTaxaAdm, setDescTaxaAdm] = useState(false);
+  const [descUniforme, setDescUniforme] = useState(false);
+  const competenciaAtual = periodoInicio.slice(0, 7); // 'YYYY-MM'
+
+  // ── Desconto de Uniforme ──
+  const [descontosUniforme, setDescontosUniforme] = useState<DescontoUniforme[]>([]);
+  const [openAddUniforme, setOpenAddUniforme] = useState(false);
+  const [openListaUniforme, setOpenListaUniforme] = useState(false);
+  const [savingUniforme, setSavingUniforme] = useState(false);
+  const [formUniforme, setFormUniforme] = useState({
+    cooperado_id: '', valor_total: '160', parcelas: '4', competencia_inicio: competenciaAtual, observacao: '',
+  });
+
+  const loadDescontosUniforme = async () => {
+    const { data } = await supabase.from('descontos_uniforme').select('*').eq('ativo', true);
+    setDescontosUniforme((data ?? []) as unknown as DescontoUniforme[]);
+  };
+  useEffect(() => { loadDescontosUniforme(); }, []);
+
+  const adicionarDescontoUniforme = async () => {
+    if (!formUniforme.cooperado_id) return toast.error('Selecione o cooperado');
+    const valorTotal = parseFloat(formUniforme.valor_total.replace(',', '.'));
+    const parcelas = parseInt(formUniforme.parcelas, 10);
+    if (!valorTotal || valorTotal <= 0) return toast.error('Informe um valor total válido');
+    if (!parcelas || parcelas <= 0) return toast.error('Informe a quantidade de parcelas');
+    if (!/^\d{4}-\d{2}$/.test(formUniforme.competencia_inicio)) return toast.error('Informe a competência de início (mês/ano)');
+    setSavingUniforme(true);
+    const { error } = await supabase.from('descontos_uniforme').insert({
+      cooperado_id: formUniforme.cooperado_id,
+      valor_total: valorTotal,
+      parcelas,
+      valor_parcela: +(valorTotal / parcelas).toFixed(2),
+      competencia_inicio: formUniforme.competencia_inicio,
+      observacao: formUniforme.observacao.trim() || null,
+      ativo: true,
+    } as never);
+    setSavingUniforme(false);
+    if (error) return toast.error(error.message);
+    toast.success('Desconto de uniforme cadastrado');
+    setOpenAddUniforme(false);
+    setFormUniforme({ cooperado_id: '', valor_total: '160', parcelas: '4', competencia_inicio: competenciaAtual, observacao: '' });
+    loadDescontosUniforme();
+  };
+
+  const removerDescontoUniforme = async (id: string) => {
+    const { error } = await supabase.from('descontos_uniforme').update({ ativo: false } as never).eq('id', id);
+    if (error) return toast.error(error.message);
+    toast.success('Desconto de uniforme removido');
+    loadDescontosUniforme();
+  };
 
   const setoresFiltrados = useMemo(
     () => filterHospital === 'all' ? sectors : sectors.filter(s => s.hospital_id === filterHospital),
@@ -711,6 +851,7 @@ function AbaRPA({ rows, hospitals, sectors, cooperados, periodoLabel }: { rows: 
   // ── Envio em massa ──
   type ProgressoEnvio = { total: number; atual: number; enviados: number; erros: number; nomAtual: string; concluido: boolean };
   const [enviandoTodos, setEnviandoTodos] = useState(false);
+  const [extraindoRPAs, setExtraindoRPAs] = useState(false);
   const [progresso, setProgresso] = useState<ProgressoEnvio | null>(null);
   const abortRef = useState({ cancelado: false })[0];
 
@@ -728,7 +869,8 @@ function AbaRPA({ rows, hospitals, sectors, cooperados, periodoLabel }: { rows: 
       prog.nomAtual = cooperado.nome;
       setProgresso({ ...prog });
 
-      const result = await enviarRPAEmail(cooperado, lancamentos, periodoLabel, descInss, descCotaParte);
+      const uniformeCoop = calcularDescontoUniforme(cooperado.id, competenciaAtual, descontosUniforme);
+      const result = await enviarRPAEmail(cooperado, lancamentos, periodoLabel, descInss, descCotaParte, descTaxaAdm, descUniforme, uniformeCoop);
       if (result.success) {
         prog.enviados++;
         setRpaStatus(prev => ({ ...prev, [cooperado.id]: 'enviado' }));
@@ -749,6 +891,23 @@ function AbaRPA({ rows, hospitals, sectors, cooperados, periodoLabel }: { rows: 
   };
 
   const cancelarEnvio = () => { abortRef.cancelado = true; };
+
+  const extrairTodasRPAsPDF = async () => {
+    if (filtered.length === 0) return;
+    setExtraindoRPAs(true);
+    try {
+      let doc: jsPDF | undefined;
+      for (const { cooperado, lancamentos } of filtered) {
+        const uniformeCoop = calcularDescontoUniforme(cooperado.id, competenciaAtual, descontosUniforme);
+        doc = await gerarPDFRPA(cooperado, lancamentos, periodoLabel, false, descInss, descCotaParte, descTaxaAdm, descUniforme, uniformeCoop, doc);
+      }
+      const slug = (s: string) => s.replace(/[^a-zA-Z0-9]/g, '_');
+      doc?.save(`RPAs_${slug(periodoLabel)}.pdf`);
+      toast.success(`${filtered.length} RPA${filtered.length !== 1 ? 's' : ''} exportada${filtered.length !== 1 ? 's' : ''} em um único arquivo`);
+    } finally {
+      setExtraindoRPAs(false);
+    }
+  };
 
   const nomeCliente = filterHospital !== 'all'
     ? (hospitals.find(h => h.id === filterHospital)?.nome ?? '')
@@ -800,8 +959,8 @@ function AbaRPA({ rows, hospitals, sectors, cooperados, periodoLabel }: { rows: 
     doc.text(subtitulo, W / 2, nomeCliente ? 17 : headerH / 2 + 5, { align: 'center' });
 
     // Descontos aplicados
-    if (descInss || descCotaParte) {
-      const descs = [descInss && 'INSS 20%', descCotaParte && `Cota Parte R$${DESCONTO_COTA_PARTE}`].filter(Boolean).join(' + ');
+    if (descInss || descCotaParte || descTaxaAdm || descUniforme) {
+      const descs = [descInss && 'INSS 20%', descCotaParte && `Cota Parte R$${DESCONTO_COTA_PARTE}`, descTaxaAdm && 'Taxa Administrativa CADES', descUniforme && 'Desconto Uniforme'].filter(Boolean).join(' + ');
       doc.setFontSize(7.5); doc.setTextColor(120, 80, 20);
       doc.text(`Descontos aplicados: ${descs}`, W / 2, nomeCliente ? 23 : headerH / 2 + 11, { align: 'center' });
     }
@@ -810,34 +969,45 @@ function AbaRPA({ rows, hospitals, sectors, cooperados, periodoLabel }: { rows: 
     doc.text(`Emitido em ${new Date().toLocaleDateString('pt-BR')}`, W - MR, nomeCliente ? 10 : headerH / 2 + 5, { align: 'right' });
 
     // ── Dados ──
-    let totalBruto = 0; let totalINSS = 0; let totalCota = 0; let totalLiquido = 0;
+    let totalBruto = 0; let totalINSS = 0; let totalCota = 0; let totalTaxaAdm = 0; let totalUniforme = 0; let totalLiquido = 0;
     const tableBody = filtered.map(({ cooperado, lancamentos }) => {
-      const bruto   = lancamentos.reduce((s, r) => s + Number(r.valor_repasse_cooperado), 0);
-      const inss    = descInss    ? bruto * PERCENTUAL_INSS : 0;
-      const cota    = descCotaParte ? DESCONTO_COTA_PARTE    : 0;
-      const liquido = bruto - inss - cota;
-      totalBruto   += bruto;
-      totalINSS    += inss;
-      totalCota    += cota;
-      totalLiquido += liquido;
+      const bruto     = lancamentos.reduce((s, r) => s + Number(r.valor_repasse_cooperado), 0);
+      const inss      = descInss    ? bruto * PERCENTUAL_INSS : 0;
+      const cota      = descCotaParte ? DESCONTO_COTA_PARTE    : 0;
+      const taxaAdm   = descTaxaAdm ? calcularDescontoTaxaAdministrativa(lancamentos).total : 0;
+      const uniformeCoop = calcularDescontoUniforme(cooperado.id, competenciaAtual, descontosUniforme);
+      const uniforme  = descUniforme && uniformeCoop ? uniformeCoop.valor : 0;
+      const liquido   = bruto - inss - cota - taxaAdm - uniforme;
+      totalBruto     += bruto;
+      totalINSS      += inss;
+      totalCota      += cota;
+      totalTaxaAdm   += taxaAdm;
+      totalUniforme  += uniforme;
+      totalLiquido   += liquido;
 
       const row: (string | number)[] = [cooperado.nome, String(lancamentos.length), fmt(bruto)];
       if (descInss)      row.push(`(${fmt(inss)})`);
       if (descCotaParte) row.push(`(${fmt(cota)})`);
+      if (descTaxaAdm)   row.push(`(${fmt(taxaAdm)})`);
+      if (descUniforme)  row.push(uniforme > 0 ? `(${fmt(uniforme)})` : '');
       row.push(fmt(liquido), cooperado.pix ?? '—');
       return row;
     });
 
     // Larguras dinâmicas conforme descontos selecionados
-    const fixo = 75 + 12 + 47; // Nome + Plt + PIX
-    const nDesc = (descInss ? 1 : 0) + (descCotaParte ? 1 : 0);
+    const nDesc = (descInss ? 1 : 0) + (descCotaParte ? 1 : 0) + (descTaxaAdm ? 1 : 0) + (descUniforme ? 1 : 0);
     const valorCols = 2 + nDesc; // Bruto + descontos + Líquido
-    const wValor = Math.floor((CW - fixo) / valorCols);
-    const wPix   = CW - fixo - wValor * valorCols;
+    const wNome = 60; const wPlt = 11; const wPix = 48;
+    const fixo = wNome + wPlt + wPix;
+    const wValor = (CW - fixo) / valorCols;
+    const headFontSize = nDesc >= 3 ? 7 : 8;
+    const valorFontSize = nDesc >= 3 ? 8 : 9;
 
     const head: string[] = ['Cooperado(a)', 'Plt.', 'Valor Bruto'];
     if (descInss)      head.push('INSS 20%');
     if (descCotaParte) head.push('Cota Parte');
+    if (descTaxaAdm)   head.push('Taxa Adm.');
+    if (descUniforme)  head.push('Desc. Uniforme');
     head.push('Valor Líquido', 'Chave PIX');
 
     const footRow: object[] = [
@@ -846,60 +1016,73 @@ function AbaRPA({ rows, hospitals, sectors, cooperados, periodoLabel }: { rows: 
     ];
     if (descInss)      footRow.push({ content: `(${fmt(totalINSS)})`, styles: { halign: 'right', fontStyle: 'bold', textColor: [180, 40, 40] } });
     if (descCotaParte) footRow.push({ content: `(${fmt(totalCota)})`, styles: { halign: 'right', fontStyle: 'bold', textColor: [180, 40, 40] } });
+    if (descTaxaAdm)   footRow.push({ content: `(${fmt(totalTaxaAdm)})`, styles: { halign: 'right', fontStyle: 'bold', textColor: [180, 40, 40] } });
+    if (descUniforme)  footRow.push({ content: `(${fmt(totalUniforme)})`, styles: { halign: 'right', fontStyle: 'bold', textColor: [180, 40, 40] } });
     footRow.push({ content: fmt(totalLiquido), styles: { halign: 'right', fontStyle: 'bold', textColor: [26, 47, 90] } });
     footRow.push({ content: '' });
 
     const colStyles: Record<number, object> = {
-      0: { cellWidth: 75, valign: 'middle' },
-      1: { cellWidth: 12, halign: 'center', valign: 'middle' },
+      0: { cellWidth: wNome, valign: 'middle' },
+      1: { cellWidth: wPlt, halign: 'center', valign: 'middle' },
     };
     let ci = 2;
     colStyles[ci++] = { cellWidth: wValor, halign: 'right', valign: 'middle' }; // Bruto
     if (descInss)      colStyles[ci++] = { cellWidth: wValor, halign: 'right', valign: 'middle', textColor: [180, 40, 40] };
     if (descCotaParte) colStyles[ci++] = { cellWidth: wValor, halign: 'right', valign: 'middle', textColor: [180, 40, 40] };
+    if (descTaxaAdm)   colStyles[ci++] = { cellWidth: wValor, halign: 'right', valign: 'middle', textColor: [180, 40, 40] };
+    if (descUniforme)  colStyles[ci++] = { cellWidth: wValor, halign: 'right', valign: 'middle', textColor: [180, 40, 40] };
     colStyles[ci++] = { cellWidth: wValor, halign: 'right', valign: 'middle', textColor: [26, 47, 90], fontStyle: 'bold' };
-    colStyles[ci]   = { cellWidth: 47 + wPix, valign: 'middle', fontSize: 8, textColor: [60, 60, 60] };
+    colStyles[ci]   = { cellWidth: wPix, halign: 'left', valign: 'middle', fontSize: 7.5, textColor: [60, 60, 60], overflow: 'linebreak' };
 
     autoTable(doc, {
       startY: headerH + 6,
       head: [head],
       body: tableBody,
       foot: [footRow],
-      styles: { fontSize: 9, cellPadding: 3.5, valign: 'middle' },
-      headStyles: { fillColor: [26, 47, 90], textColor: 255, fontStyle: 'bold', fontSize: 8, cellPadding: 4, valign: 'middle', halign: 'center' },
-      footStyles: { fillColor: [235, 240, 255], textColor: [26, 26, 26], fontStyle: 'bold', fontSize: 9, cellPadding: 4 },
+      styles: { fontSize: valorFontSize, cellPadding: { top: 3, right: 3.5, bottom: 3, left: 3.5 }, valign: 'middle', overflow: 'linebreak', minCellHeight: 9 },
+      headStyles: { fillColor: [26, 47, 90], textColor: 255, fontStyle: 'bold', fontSize: headFontSize, cellPadding: 3.5, valign: 'middle', halign: 'center' },
+      footStyles: { fillColor: [235, 240, 255], textColor: [26, 26, 26], fontStyle: 'bold', fontSize: valorFontSize, cellPadding: 3.5, valign: 'middle' },
       columnStyles: colStyles,
       alternateRowStyles: { fillColor: [248, 250, 255] },
       margin: { left: ML, right: MR },
+      tableWidth: CW,
       rowPageBreak: 'avoid',
       showFoot: 'lastPage',
     });
 
-    // ── Resumo financeiro ──
+    // ── Resumo financeiro (dinâmico, só mostra os descontos realmente aplicados) ──
     const tY: number = (doc as any).lastAutoTable.finalY + 8;
     if (tY < H - 32) {
-      const bW = CW / 4; const bH = 20;
-      const resumo = [
-        { label: 'Total Bruto',      value: fmt(totalBruto),   cor: [26, 47, 90]  as [number,number,number] },
-        { label: 'Total INSS (20%)', value: fmt(totalINSS),    cor: [180, 40, 40] as [number,number,number] },
-        { label: 'Total Cota Parte', value: fmt(totalCota),    cor: [180, 40, 40] as [number,number,number] },
-        { label: 'Total Líquido',    value: fmt(totalLiquido), cor: [16, 100, 50]  as [number,number,number] },
+      const bH = 20;
+      const resumo: { label: string; value: string; cor: [number, number, number] }[] = [
+        { label: 'Total Bruto', value: fmt(totalBruto), cor: [26, 47, 90] },
       ];
+      if (descInss)      resumo.push({ label: 'Total INSS (20%)',       value: fmt(totalINSS),    cor: [180, 40, 40] });
+      if (descCotaParte) resumo.push({ label: 'Total Cota Parte',       value: fmt(totalCota),    cor: [180, 40, 40] });
+      if (descTaxaAdm)   resumo.push({ label: 'Total Taxa Adm. CADES',  value: fmt(totalTaxaAdm), cor: [180, 40, 40] });
+      if (descUniforme)  resumo.push({ label: 'Total Desc. Uniforme',   value: fmt(totalUniforme),cor: [180, 40, 40] });
+      resumo.push({ label: 'Total Líquido', value: fmt(totalLiquido), cor: [16, 100, 50] });
+
+      const nBoxes = resumo.length;
+      const bW = CW / nBoxes;
+      const gap = nBoxes > 4 ? 2 : 3;
+      const labelSize = nBoxes > 4 ? 6.5 : 7.5;
+      const valueSize = nBoxes > 4 ? 9.5 : 11;
       resumo.forEach((r, i) => {
         const x = ML + i * bW;
-        const isLiq = i === 3;
+        const isLiq = i === nBoxes - 1;
         if (isLiq) {
-          doc.setFillColor(26, 47, 90); doc.rect(x, tY, bW - 3, bH, 'F');
-          doc.setFontSize(7.5); doc.setFont('helvetica', 'normal'); doc.setTextColor(180, 210, 255);
+          doc.setFillColor(26, 47, 90); doc.rect(x, tY, bW - gap, bH, 'F');
+          doc.setFontSize(labelSize); doc.setFont('helvetica', 'normal'); doc.setTextColor(180, 210, 255);
           doc.text(r.label.toUpperCase(), x + 4, tY + 7);
-          doc.setFontSize(11); doc.setFont('helvetica', 'bold'); doc.setTextColor(255, 255, 255);
+          doc.setFontSize(valueSize); doc.setFont('helvetica', 'bold'); doc.setTextColor(255, 255, 255);
           doc.text(r.value, x + 4, tY + 15);
         } else {
-          doc.setFillColor(248, 249, 252); doc.rect(x, tY, bW - 3, bH, 'F');
-          doc.setDrawColor(210, 220, 235); doc.rect(x, tY, bW - 3, bH);
-          doc.setFontSize(7.5); doc.setFont('helvetica', 'normal'); doc.setTextColor(100, 110, 130);
+          doc.setFillColor(248, 249, 252); doc.rect(x, tY, bW - gap, bH, 'F');
+          doc.setDrawColor(210, 220, 235); doc.rect(x, tY, bW - gap, bH);
+          doc.setFontSize(labelSize); doc.setFont('helvetica', 'normal'); doc.setTextColor(100, 110, 130);
           doc.text(r.label.toUpperCase(), x + 4, tY + 7);
-          doc.setFontSize(11); doc.setFont('helvetica', 'bold'); doc.setTextColor(...r.cor);
+          doc.setFontSize(valueSize); doc.setFont('helvetica', 'bold'); doc.setTextColor(...r.cor);
           doc.text(r.value, x + 4, tY + 15);
         }
       });
@@ -951,14 +1134,18 @@ function AbaRPA({ rows, hospitals, sectors, cooperados, periodoLabel }: { rows: 
 
   const totais = useMemo(() => {
     let bruto = 0;
-    filtered.forEach(({ lancamentos }) => {
+    let taxaAdm = 0;
+    let uniforme = 0;
+    filtered.forEach(({ cooperado, lancamentos }) => {
       bruto += lancamentos.reduce((s, r) => s + Number(r.valor_repasse_cooperado), 0);
+      taxaAdm += calcularDescontoTaxaAdministrativa(lancamentos).total;
+      uniforme += calcularDescontoUniforme(cooperado.id, competenciaAtual, descontosUniforme)?.valor ?? 0;
     });
     const inss = bruto * PERCENTUAL_INSS;
     const cotaParte = DESCONTO_COTA_PARTE * filtered.length;
-    const liquido = bruto - inss - cotaParte;
-    return { bruto, inss, cotaParte, liquido };
-  }, [filtered]);
+    const liquido = bruto - inss - cotaParte - taxaAdm - uniforme;
+    return { bruto, inss, cotaParte, taxaAdm, uniforme, liquido };
+  }, [filtered, competenciaAtual, descontosUniforme]);
 
   const statusCounts = useMemo(() => {
     const c = { pendente: 0, enviado: 0, erro: 0 };
@@ -981,6 +1168,26 @@ function AbaRPA({ rows, hospitals, sectors, cooperados, periodoLabel }: { rows: 
                 <input type="checkbox" checked={descCotaParte} onChange={e => setDescCotaParte(e.target.checked)} className="accent-[#1a2f5a] h-3.5 w-3.5" />
                 Cota Parte (R${DESCONTO_COTA_PARTE})
               </label>
+              <label className="flex items-center gap-2 text-xs cursor-pointer select-none">
+                <input type="checkbox" checked={descTaxaAdm} onChange={e => setDescTaxaAdm(e.target.checked)} className="accent-[#1a2f5a] h-3.5 w-3.5" />
+                Taxa Administrativa CADES
+              </label>
+              <label className="flex items-center gap-2 text-xs cursor-pointer select-none">
+                <input type="checkbox" checked={descUniforme} onChange={e => setDescUniforme(e.target.checked)} className="accent-[#1a2f5a] h-3.5 w-3.5" />
+                Desconto Uniforme
+              </label>
+            </div>
+          </div>
+          <div className="flex flex-col gap-1">
+            <Label className="text-xs font-medium">&nbsp;</Label>
+            <div className="flex gap-1.5">
+              <Button size="sm" variant="outline" className="gap-1.5 text-xs h-8" onClick={() => setOpenAddUniforme(true)}>
+                <Shirt className="h-3.5 w-3.5" /> Cadastrar uniforme
+              </Button>
+              <Button size="sm" variant="outline" className="gap-1.5 text-xs h-8" onClick={() => setOpenListaUniforme(true)} disabled={descontosUniforme.length === 0}>
+                Ver ativos
+                <Badge variant="secondary" className="ml-0.5 px-1.5">{descontosUniforme.length}</Badge>
+              </Button>
             </div>
           </div>
           <div className="min-w-[200px]">
@@ -1028,6 +1235,18 @@ function AbaRPA({ rows, hospitals, sectors, cooperados, periodoLabel }: { rows: 
             >
               <Receipt className="h-3.5 w-3.5" />
               Demonstrativo de Pagamento
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-2 border-[#1a2f5a] text-[#1a2f5a] hover:bg-[#1a2f5a] hover:text-white"
+              onClick={() => { void extrairTodasRPAsPDF(); }}
+              disabled={extraindoRPAs || filtered.length === 0}
+            >
+              {extraindoRPAs
+                ? <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                : <Download className="h-3.5 w-3.5" />}
+              Extrair RPAs (arquivo único)
             </Button>
             <Button
               size="sm"
@@ -1086,11 +1305,13 @@ function AbaRPA({ rows, hospitals, sectors, cooperados, periodoLabel }: { rows: 
           </CardContent>
         </Card>
       )}
-      <div className="grid grid-cols-4 gap-3">
+      <div className="grid grid-cols-6 gap-3">
         {[
           { label: 'Total Bruto', value: fmt(totais.bruto) },
           { label: 'INSS (20%)', value: `- ${fmt(totais.inss)}` },
           { label: `Cota Parte (${filtered.length}×R$${DESCONTO_COTA_PARTE})`, value: `- ${fmt(totais.cotaParte)}` },
+          { label: 'Taxa Adm. CADES', value: `- ${fmt(totais.taxaAdm)}` },
+          { label: 'Desconto Uniforme', value: `- ${fmt(totais.uniforme)}` },
           { label: 'Total Líquido', value: fmt(totais.liquido) },
         ].map(c => (
           <Card key={c.label}><CardContent className="p-4">
@@ -1106,10 +1327,92 @@ function AbaRPA({ rows, hospitals, sectors, cooperados, periodoLabel }: { rows: 
           {filtered.map(({ cooperado, lancamentos }) => (
             <CardCooperadoRPA key={cooperado.id} cooperado={cooperado} lancamentos={lancamentos} periodoLabel={periodoLabel}
               status={rpaStatus[cooperado.id] ?? 'pendente'} onStatusChange={s => setRpaStatus(prev => ({ ...prev, [cooperado.id]: s }))}
-              descInss={descInss} descCotaParte={descCotaParte} />
+              descInss={descInss} descCotaParte={descCotaParte} descTaxaAdm={descTaxaAdm}
+              descUniforme={descUniforme} uniforme={calcularDescontoUniforme(cooperado.id, competenciaAtual, descontosUniforme)} />
           ))}
         </div>
       )}
+
+      {/* Modal de cadastro de Desconto de Uniforme */}
+      <Dialog open={openAddUniforme} onOpenChange={setOpenAddUniforme}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle className="flex items-center gap-2"><Shirt className="h-4 w-4" /> Cadastrar Desconto de Uniforme</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <Label className="text-xs">Cooperado</Label>
+              <Select value={formUniforme.cooperado_id} onValueChange={v => setFormUniforme(f => ({ ...f, cooperado_id: v }))}>
+                <SelectTrigger><SelectValue placeholder="Selecione quem comprou o uniforme" /></SelectTrigger>
+                <SelectContent>
+                  {cooperados.map(c => <SelectItem key={c.id} value={c.id}>{c.nome}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">Valor total (R$)</Label>
+                <Input value={formUniforme.valor_total} onChange={e => setFormUniforme(f => ({ ...f, valor_total: e.target.value.replace(/[^0-9,.]/g, '') }))} placeholder="160,00" />
+              </div>
+              <div>
+                <Label className="text-xs">Parcelas</Label>
+                <Input value={formUniforme.parcelas} onChange={e => setFormUniforme(f => ({ ...f, parcelas: e.target.value.replace(/\D/g, '') }))} placeholder="4" />
+              </div>
+            </div>
+            <div>
+              <Label className="text-xs">Competência da 1ª parcela</Label>
+              <input type="month" value={formUniforme.competencia_inicio}
+                onChange={e => setFormUniforme(f => ({ ...f, competencia_inicio: e.target.value }))}
+                className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm shadow-sm" />
+              <p className="text-xs text-muted-foreground mt-1">
+                A partir desse mês, R${formUniforme.parcelas ? (parseFloat(formUniforme.valor_total.replace(',', '.') || '0') / (parseInt(formUniforme.parcelas, 10) || 1)).toFixed(2) : '—'} será descontado automaticamente por {formUniforme.parcelas || '—'} meses seguidos, sempre que a checkbox "Desconto Uniforme" estiver marcada no RPA.
+              </p>
+            </div>
+            <div>
+              <Label className="text-xs">Observação <span className="text-muted-foreground font-normal">(opcional)</span></Label>
+              <Input value={formUniforme.observacao} onChange={e => setFormUniforme(f => ({ ...f, observacao: e.target.value }))} placeholder="Ex.: uniforme comprado em 01/08" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOpenAddUniforme(false)}>Cancelar</Button>
+            <Button onClick={adicionarDescontoUniforme} disabled={savingUniforme}>
+              {savingUniforme && <RefreshCw className="mr-2 h-4 w-4 animate-spin" />} Salvar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal com a lista de Descontos de Uniforme ativos */}
+      <Dialog open={openListaUniforme} onOpenChange={setOpenListaUniforme}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Shirt className="h-4 w-4" /> Descontos de uniforme ativos ({descontosUniforme.length})
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-1.5 max-h-[60vh] overflow-y-auto">
+            {descontosUniforme.length === 0 && (
+              <p className="text-xs text-muted-foreground">Nenhum desconto de uniforme cadastrado.</p>
+            )}
+            {descontosUniforme.map(d => {
+              const coop = cooperados.find(c => c.id === d.cooperado_id);
+              const info = calcularDescontoUniforme(d.cooperado_id, competenciaAtual, [d]);
+              return (
+                <div key={d.id} className="flex items-center justify-between text-xs bg-muted/40 rounded-md px-3 py-1.5">
+                  <span>
+                    <strong>{coop?.nome ?? 'Cooperado não encontrado'}</strong> — {fmt(d.valor_total)} em {d.parcelas}x de {fmt(d.valor_parcela)}
+                    {' '}(início {d.competencia_inicio})
+                    {info
+                      ? <span className="ml-1.5 text-primary font-medium">parcela {info.parcelaAtual}/{info.parcelas} neste mês</span>
+                      : <span className="ml-1.5 text-muted-foreground">sem parcela neste mês</span>}
+                  </span>
+                  <Button size="sm" variant="ghost" className="h-6 text-xs text-destructive hover:text-destructive px-2" onClick={() => removerDescontoUniforme(d.id)}>
+                    <X className="h-3 w-3" /> Remover
+                  </Button>
+                </div>
+              );
+            })}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -1156,7 +1459,7 @@ function TabelaGrupos({ grupos, valorKey, grupoLabel, subGrupoLabel, competencia
                 {lancs.map((r, i) => {
                   const fechado = isFechado(r);
                   return (
-                    <tr key={r.id} className={fechado ? 'bg-red-50/40' : i % 2 === 0 ? 'bg-white' : 'bg-muted/10'}>
+                    <tr key={r.id} className={fechado ? 'bg-red-50/40 dark:bg-red-950/20' : i % 2 === 0 ? 'bg-background' : 'bg-muted/10'}>
                       <td className="px-4 py-3 tabular-nums">
                         {fechado && <Lock className="inline h-3 w-3 mr-1.5 text-red-500" title="Competência fechada" />}
                         {fmtDate(r.data_plantao)}
@@ -1387,7 +1690,7 @@ function AbaFechamentoSetores({ rows, competenciasFechadas, periodoInicio, perio
                   const fat = sr.reduce((s, r) => s + Number(r.valor_cobrado_cliente), 0);
                   const rep = sr.reduce((s, r) => s + Number(r.valor_repasse_cooperado), 0);
                   return (
-                    <tr key={sId} className={fechado ? 'bg-red-50/40' : 'hover:bg-muted/20'}>
+                    <tr key={sId} className={fechado ? 'bg-red-50/40 dark:bg-red-950/20' : 'hover:bg-muted/20'}>
                       <td className="px-4 py-3 font-medium">
                         {fechado && <Lock className="inline h-3.5 w-3.5 mr-1.5 text-red-500" />}
                         {sNome}
@@ -1469,7 +1772,7 @@ export default function Fechamento() {
     while (true) {
       const { data } = await supabase
         .from('lancamentos_plantoes')
-        .select('id, data_plantao, total_horas, profissao, tipo_plantao, status, valor_cobrado_cliente, valor_repasse_cooperado, cooperados(id, nome), hospitals(id, nome), sectors(id, nome)')
+        .select('id, data_plantao, total_horas, horario_inicio, horario_fim, profissao, tipo_plantao, status, valor_cobrado_cliente, valor_repasse_cooperado, taxa_administrativa_cades, cooperados(id, nome), hospitals(id, nome), sectors(id, nome)')
         .gte('data_plantao', inicio)
         .lte('data_plantao', fim)
         .order('data_plantao', { ascending: true })
@@ -1530,7 +1833,7 @@ export default function Fechamento() {
             <AbaRepasse rows={rows} hospitals={hospitals} sectors={sectors} cooperados={cooperados} periodoLabel={periodoCalc.label} competenciasFechadas={competenciasFechadas} />
           </TabsContent>
           <TabsContent value="rpa" className="mt-4">
-            <AbaRPA rows={rows} hospitals={hospitals} sectors={sectors} cooperados={cooperados} periodoLabel={periodoCalc.label} />
+            <AbaRPA rows={rows} hospitals={hospitals} sectors={sectors} cooperados={cooperados} periodoLabel={periodoCalc.label} periodoInicio={periodoCalc.inicio} />
           </TabsContent>
           <TabsContent value="competencias" className="mt-4">
             <AbaFechamentoSetores

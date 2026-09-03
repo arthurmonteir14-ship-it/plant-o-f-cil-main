@@ -34,7 +34,7 @@ interface Cooperado {
   sexo: string | null; raca_cor: string | null;
 }
 
-const profissoes = Object.entries(profissaoLabel) as [string, string][];
+const NOVA_PROFISSAO = '__nova__';
 
 const CAMPOS_EXPORT = [
   { key: 'profissao',             label: 'Categoria / Profissão' },
@@ -160,6 +160,7 @@ export default function CadastroCooperado() {
   const [saving, setSaving] = useState(false);
   const [buscandoCEP, setBuscandoCEP] = useState(false);
   const [modalExport, setModalExport] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [camposSel, setCamposSel] = useState<Record<CampoKey, boolean>>({
     profissao: true, cpf: true, rg: false, pis_inss: false,
     data_nascimento: true, municipio_nascimento: false, escolaridade: false,
@@ -175,6 +176,8 @@ export default function CadastroCooperado() {
   const [search, setSearch] = useState('');
   const [filtroProfissao, setFiltroProfissao] = useState('__todos__');
   const [filtroStatus, setFiltroStatus] = useState('ativo');
+  const [novaProfissaoInput, setNovaProfissaoInput] = useState('');
+  const [valorProfissoes, setValorProfissoes] = useState<string[]>([]);
 
   const load = async () => {
     setLoading(true);
@@ -183,6 +186,21 @@ export default function CadastroCooperado() {
     setLoading(false);
   };
   useEffect(() => { load(); }, []);
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase.from('tabela_valores').select('profissao').eq('ativo', true);
+      setValorProfissoes([...new Set(((data ?? []) as unknown as { profissao: string }[]).map(r => r.profissao))]);
+    })();
+  }, []);
+
+  // Profissão não é mais um enum fixo no banco — reúne as profissões padrão, as que já
+  // estiverem em uso em cooperados cadastrados e as cadastradas na Tabela de Valores,
+  // para que uma função nova criada lá já apareça aqui sem precisar digitar de novo.
+  const profissoesConhecidas = useMemo(() => {
+    const set = new Set<string>([...Object.keys(profissaoLabel), ...rows.map(r => r.profissao), ...valorProfissoes]);
+    return [...set].sort((a, b) => (profissaoLabel[a] ?? a).localeCompare(profissaoLabel[b] ?? b));
+  }, [rows, valorProfissoes]);
 
   const filtered = useMemo(() => rows.filter(r => {
     const q = search.toLowerCase();
@@ -246,6 +264,7 @@ export default function CadastroCooperado() {
 
   const salvar = async () => {
     if (!form.nome.trim()) return toast.error('Informe o nome do cooperado');
+    if (!form.profissao.trim()) return toast.error('Informe a profissão');
     if (form.cpf && !validarCPF(form.cpf)) return toast.error('CPF inválido');
     if (form.pis_inss && !validarPIS(form.pis_inss)) return toast.error('PIS/INSS inválido');
     setSaving(true);
@@ -257,7 +276,7 @@ export default function CadastroCooperado() {
       escolaridade: form.escolaridade || null,
       telefone: form.telefone.trim() || null,
       email: form.email.trim() || null,
-      profissao: form.profissao as 'enfermeiro' | 'enfermeiro_rt' | 'tecnico_enfermagem' | 'fonoaudiologo' | 'assistente_social',
+      profissao: form.profissao,
       registro_profissional: form.registro_profissional.trim() || null,
       data_adesao: form.data_adesao || null,
       ativo: form.ativo,
@@ -317,6 +336,21 @@ export default function CadastroCooperado() {
 
   const camposAtivos = CAMPOS_EXPORT.filter(c => camposSel[c.key]);
 
+  // Se nenhum cooperado estiver marcado na tabela, exporta todos os que batem com os filtros ativos.
+  const paraExportar = selectedIds.size > 0 ? filtered.filter(r => selectedIds.has(r.id)) : filtered;
+
+  const toggleSelect = (id: string, v: boolean) =>
+    setSelectedIds(prev => { const s = new Set(prev); v ? s.add(id) : s.delete(id); return s; });
+
+  const todosFiltradosSelecionados = filtered.length > 0 && filtered.every(r => selectedIds.has(r.id));
+
+  const toggleSelectAll = (v: boolean) =>
+    setSelectedIds(prev => {
+      const s = new Set(prev);
+      filtered.forEach(r => v ? s.add(r.id) : s.delete(r.id));
+      return s;
+    });
+
   const exportarPDF = () => {
     const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
     const W = doc.internal.pageSize.getWidth();
@@ -325,12 +359,12 @@ export default function CadastroCooperado() {
     doc.setTextColor(255, 255, 255); doc.setFontSize(13); doc.setFont('helvetica', 'bold');
     doc.text('CADES — Relação de Cooperados', 14, 10);
     doc.setFontSize(8); doc.setFont('helvetica', 'normal'); doc.setTextColor(180, 200, 255);
-    doc.text(`Emitido em: ${new Date().toLocaleDateString('pt-BR')}  ·  ${filtered.length} cooperado(s)`, 14, 17);
+    doc.text(`Emitido em: ${new Date().toLocaleDateString('pt-BR')}  ·  ${paraExportar.length} cooperado(s)`, 14, 17);
 
     autoTable(doc, {
       startY: 26,
       head: [['Nome', ...camposAtivos.map(c => c.label)]],
-      body: filtered.map(r => [r.nome, ...camposAtivos.map(c => getValorCampo(r, c.key))]),
+      body: paraExportar.map(r => [r.nome, ...camposAtivos.map(c => getValorCampo(r, c.key))]),
       styles: { fontSize: 7.5, cellPadding: 2.5 },
       headStyles: { fillColor: [31, 41, 99], textColor: 255, fontStyle: 'bold' },
       alternateRowStyles: { fillColor: [248, 249, 252] },
@@ -352,7 +386,7 @@ export default function CadastroCooperado() {
 
   const exportarCSV = () => {
     const header = ['Nome', ...camposAtivos.map(c => c.label)];
-    const lines = filtered.map(r =>
+    const lines = paraExportar.map(r =>
       [r.nome, ...camposAtivos.map(c => getValorCampo(r, c.key))].map(v => `"${v}"`).join(';')
     );
     const csv = [header.join(';'), ...lines].join('\n');
@@ -373,7 +407,15 @@ export default function CadastroCooperado() {
           <h1 className="text-2xl md:text-3xl font-bold">Cadastro de Cooperados</h1>
           <p className="text-sm text-muted-foreground">Gerencie os cooperados da CADES</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
+          {selectedIds.size > 0 && (
+            <>
+              <span className="text-xs text-muted-foreground">{selectedIds.size} selecionado(s)</span>
+              <Button variant="ghost" size="sm" className="text-xs h-7" onClick={() => setSelectedIds(new Set())}>
+                Limpar seleção
+              </Button>
+            </>
+          )}
           <Button variant="outline" className="gap-2" onClick={() => setModalExport(true)}>
             <FileDown className="h-4 w-4" /> Exportar relação
           </Button>
@@ -393,7 +435,7 @@ export default function CadastroCooperado() {
           <SelectTrigger className="w-52"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="__todos__">Todas as profissões</SelectItem>
-            {profissoes.map(([v, l]) => <SelectItem key={v} value={v}>{l}</SelectItem>)}
+            {profissoesConhecidas.map(v => <SelectItem key={v} value={v}>{profissaoLabel[v] ?? v}</SelectItem>)}
           </SelectContent>
         </Select>
         <Select value={filtroStatus} onValueChange={setFiltroStatus}>
@@ -427,6 +469,13 @@ export default function CadastroCooperado() {
               <table className="w-full text-sm">
                 <thead className="text-xs uppercase tracking-wider text-muted-foreground bg-muted/40">
                   <tr>
+                    <th className="p-3 w-8">
+                      <Checkbox
+                        checked={todosFiltradosSelecionados}
+                        onCheckedChange={v => toggleSelectAll(v === true)}
+                        aria-label="Selecionar todos"
+                      />
+                    </th>
                     <th className="text-left p-3 font-medium">Nome</th>
                     <th className="text-left p-3 font-medium">COREN / Registro</th>
                     <th className="text-left p-3 font-medium">Profissão</th>
@@ -438,6 +487,13 @@ export default function CadastroCooperado() {
                 <tbody className="divide-y">
                   {filtered.map(r => (
                     <tr key={r.id} className="hover:bg-muted/30">
+                      <td className="p-3">
+                        <Checkbox
+                          checked={selectedIds.has(r.id)}
+                          onCheckedChange={v => toggleSelect(r.id, v === true)}
+                          aria-label={`Selecionar ${r.nome}`}
+                        />
+                      </td>
                       <td className="p-3 font-medium">{r.nome}</td>
                       <td className="p-3 text-muted-foreground">{r.registro_profissional ?? '—'}</td>
                       <td className="p-3">{profissaoLabel[r.profissao] ?? r.profissao}</td>
@@ -650,12 +706,29 @@ export default function CadastroCooperado() {
             <TabsContent value="profissional" className="space-y-3 mt-4">
               <div>
                 <Label>Profissão *</Label>
-                <Select value={form.profissao} onValueChange={v => f('profissao', v)}>
+                <Select
+                  value={profissoesConhecidas.includes(form.profissao) ? form.profissao : NOVA_PROFISSAO}
+                  onValueChange={v => {
+                    if (v === NOVA_PROFISSAO) { setNovaProfissaoInput(''); f('profissao', ''); }
+                    else f('profissao', v);
+                  }}
+                >
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    {profissoes.map(([v, l]) => <SelectItem key={v} value={v}>{l}</SelectItem>)}
+                    {profissoesConhecidas.map(v => <SelectItem key={v} value={v}>{profissaoLabel[v] ?? v}</SelectItem>)}
+                    <SelectItem value={NOVA_PROFISSAO}>+ Nova profissão…</SelectItem>
                   </SelectContent>
                 </Select>
+                {!profissoesConhecidas.includes(form.profissao) && (
+                  <Input
+                    autoFocus
+                    className="mt-2"
+                    value={novaProfissaoInput}
+                    onChange={e => setNovaProfissaoInput(e.target.value)}
+                    onBlur={() => novaProfissaoInput.trim() && f('profissao', toTitleCase(novaProfissaoInput))}
+                    placeholder="Digite o nome da nova profissão"
+                  />
+                )}
               </div>
               <div>
                 <Label>COREN / Registro profissional</Label>
@@ -740,8 +813,10 @@ export default function CadastroCooperado() {
             <DialogTitle>Exportar relação de cooperados</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            Serão exportados <strong>{filtered.length}</strong> cooperado(s) conforme os filtros ativos.
-            Selecione os campos que deseja incluir:
+            {selectedIds.size > 0
+              ? <>Serão exportados os <strong>{paraExportar.length}</strong> cooperado(s) marcados na tabela.</>
+              : <>Nenhum cooperado marcado na tabela — serão exportados todos os <strong>{filtered.length}</strong> que batem com os filtros ativos.</>}
+            {' '}Selecione os campos que deseja incluir:
           </p>
           <div className="grid grid-cols-2 gap-2 py-2">
             {CAMPOS_EXPORT.map(c => (

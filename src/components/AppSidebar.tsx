@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/sidebar';
 import { useAuth } from '@/hooks/useAuth';
 import { roleLabel } from '@/lib/format';
+import { ModeToggle } from '@/components/ModeToggle';
 
 const mainItems = [
   { title: 'Dashboard', url: '/', icon: LayoutDashboard },
@@ -150,6 +151,7 @@ export function AppSidebar() {
               </p>
               <p className="truncate text-[10px] text-muted-foreground/60">{roleName}</p>
             </div>
+            <ModeToggle />
             <button
               onClick={signOut}
               title="Sair"
@@ -159,13 +161,16 @@ export function AppSidebar() {
             </button>
           </div>
         ) : (
-          <button
-            onClick={signOut}
-            title="Sair"
-            className="flex w-full items-center justify-center rounded-lg p-2 text-muted-foreground/50 hover:text-muted-foreground transition-colors"
-          >
-            <LogOut className="h-4 w-4" />
-          </button>
+          <div className="flex flex-col gap-1">
+            <ModeToggle collapsed />
+            <button
+              onClick={signOut}
+              title="Sair"
+              className="flex w-full items-center justify-center rounded-lg p-2 text-muted-foreground/50 hover:text-muted-foreground transition-colors"
+            >
+              <LogOut className="h-4 w-4" />
+            </button>
+          </div>
         )}
       </SidebarFooter>
     </Sidebar>

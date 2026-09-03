@@ -9,10 +9,6 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 DO $$ BEGIN
-  CREATE TYPE public.profissao_enum AS ENUM ('enfermeiro', 'tecnico_enfermagem', 'fonoaudiologo', 'assistente_social');
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-
-DO $$ BEGIN
   CREATE TYPE public.tipo_plantao_enum AS ENUM ('normal', 'extra', 'sobreaviso');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
@@ -130,6 +126,8 @@ CREATE TABLE IF NOT EXISTS public.hospitals (
   forma_pagamento TEXT DEFAULT 'boleto',
   observacoes_financeiras TEXT,
   taxa_administrativa NUMERIC(5,2) NOT NULL DEFAULT 0 CHECK (taxa_administrativa >= 0 AND taxa_administrativa <= 100),
+  retem_iss BOOLEAN NOT NULL DEFAULT false,
+  gerar_relatorio_consolidado BOOLEAN NOT NULL DEFAULT false,
   ativo BOOLEAN NOT NULL DEFAULT true,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -179,7 +177,7 @@ CREATE TABLE IF NOT EXISTS public.cooperados (
   nome TEXT NOT NULL,
   cpf TEXT,
   data_nascimento DATE,
-  profissao profissao_enum NOT NULL,
+  profissao TEXT NOT NULL,
   registro_profissional TEXT,
   telefone TEXT,
   email TEXT,
@@ -213,12 +211,13 @@ END $$;
 -- ============ TABELA VALORES ============
 CREATE TABLE IF NOT EXISTS public.tabela_valores (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  profissao profissao_enum NOT NULL,
+  profissao TEXT NOT NULL,
   tipo_plantao tipo_plantao_enum NOT NULL,
   hospital_id UUID REFERENCES public.hospitals(id) ON DELETE CASCADE,
   valor_hora_cliente NUMERIC(10,2) NOT NULL CHECK (valor_hora_cliente >= 0),
   percentual_repasse NUMERIC(5,2) NOT NULL DEFAULT 70 CHECK (percentual_repasse >= 0 AND percentual_repasse <= 100),
   valor_hora_cooperado NUMERIC(10,2),
+  taxa_administrativa_cades NUMERIC(6,3) CHECK (taxa_administrativa_cades IS NULL OR (taxa_administrativa_cades >= 0 AND taxa_administrativa_cades <= 100)),
   ativo BOOLEAN NOT NULL DEFAULT true,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -251,12 +250,13 @@ CREATE TABLE IF NOT EXISTS public.lancamentos_plantoes (
   horario_inicio TIME NOT NULL,
   horario_fim TIME NOT NULL,
   total_horas NUMERIC(5,2) NOT NULL,
-  profissao profissao_enum NOT NULL,
+  profissao TEXT NOT NULL,
   tipo_plantao tipo_plantao_enum NOT NULL DEFAULT 'normal',
   valor_hora_cliente NUMERIC(10,2) NOT NULL,
   valor_cobrado_cliente NUMERIC(12,2) NOT NULL,
   percentual_repasse NUMERIC(5,2) NOT NULL,
   valor_repasse_cooperado NUMERIC(12,2) NOT NULL,
+  taxa_administrativa_cades NUMERIC(6,3),
   status status_lancamento_enum NOT NULL DEFAULT 'lancado',
   observacao TEXT,
   lancado_por UUID REFERENCES auth.users(id),

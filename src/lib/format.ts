@@ -4,6 +4,9 @@ export const formatCurrency = (value: number | null | undefined) =>
 /** Valor fixo de cota-parte cooperativa descontado por cooperado a cada fechamento. */
 export const DESCONTO_COTA_PARTE = 80;
 
+/** Alíquota de ISS (%) aplicada no Extrato Financeiro apenas para clientes que retêm ISS na fonte. */
+export const ALIQUOTA_ISS = 5;
+
 export const formatDate = (value: string | Date) => {
   const date = typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)
     ? new Date(value + 'T00:00:00')

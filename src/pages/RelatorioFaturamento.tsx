@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
-import { formatCurrency, DESCONTO_COTA_PARTE } from '@/lib/format';
+import { formatCurrency, DESCONTO_COTA_PARTE, ALIQUOTA_ISS } from '@/lib/format';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ResponsiveContainer, PieChart, Pie, Cell,
@@ -20,6 +20,12 @@ const GOLD   = '#92400e';
 const GREEN  = '#166534';
 const DANGER = '#9f1d1d';
 const BORDER = '#d8dce3';
+const MUTED       = '#64748b';
+const MUTED_LIGHT = '#94a3b8';
+const SURFACE      = '#f8fafc';
+const SURFACE_ALT  = '#eef2f9';
+const PILL_NAVY_BG  = '#eff6ff';
+const PILL_GREEN_BG = '#f0fdf4';
 const SERIF  = "Georgia, 'Times New Roman', Times, serif";
 const CORES = ['#1a2f5a','#2563eb','#16a34a','#d97706','#dc2626','#7c3aed','#0891b2','#be185d','#059669','#b45309'];
 const MESES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
@@ -29,7 +35,6 @@ const INDICADORES_LABELS: Record<string, string> = {
   faturado:           'Total Faturado',
   repassado:          'Total Repassado',
   taxaAdministrativa: 'Taxa Administrativa',
-  pctRepasse:         '% de Repasse',
   cotaParte:          'Cota Parte',
 };
 
@@ -79,7 +84,12 @@ function calcPeriodoAnterior(inicioMes: string, fimMes: string) {
   return { inicioAnt: fmt(inicioAntDate), fimAnt: fmt(fimAntDate) };
 }
 
-interface Hospital { id: string; nome: string; taxa_administrativa?: number | null; }
+interface Hospital {
+  id: string; nome: string;
+  taxa_administrativa?: number | null;
+  retem_iss?: boolean | null;
+  gerar_relatorio_consolidado?: boolean | null;
+}
 interface Sector   { id: string; nome: string; hospital_id: string; }
 
 export default function RelatorioFaturamento() {
@@ -97,13 +107,16 @@ export default function RelatorioFaturamento() {
   const [setorId,      setSetorId]      = useState(searchParams.get('setor')        ?? '');
   const [setorNome,    setSetorNome]    = useState(searchParams.get('setorNome')    ?? '');
 
+  // Filtro de clientes incluídos no relatório (null = todos). Só faz sentido quando
+  // nenhum cliente específico está selecionado no filtro "Cliente" acima.
+  const [clientesFiltro, setClientesFiltro] = useState<Set<string> | null>(null);
+
   const [mostrarRepasse] = useState(searchParams.get('mostrarRepasse') !== '0');
 
   const [indicadoresVisiveis, setIndicadoresVisiveis] = useState<Record<string, boolean>>({
     faturado:           true,
     repassado:          searchParams.get('mostrarRepasse') !== '0',
     taxaAdministrativa: true,
-    pctRepasse:         searchParams.get('mostrarRepasse') !== '0',
     cotaParte:          searchParams.get('mostrarRepasse') !== '0',
   });
 
@@ -120,10 +133,10 @@ export default function RelatorioFaturamento() {
   const [setoresAnt,    setSetoresAnt]    = useState<SetorRelRow[]>([]);
   const [periodoAnt,    setPeriodoAnt]    = useState({ inicioAnt: '', fimAnt: '' });
   const [loading,       setLoading]       = useState(true);
-  const [cotaParte,     setCotaParte]     = useState(0);
+  const [cotaPartePorClienteRaw, setCotaPartePorClienteRaw] = useState<{ hospital_id: string; cooperados: number; cotaParte: number }[]>([]);
 
   useEffect(() => {
-    supabase.from('hospitals').select('id, nome, taxa_administrativa').order('nome').then(({ data }) => setHospitals(data ?? []));
+    supabase.from('hospitals').select('id, nome, taxa_administrativa, retem_iss, gerar_relatorio_consolidado').order('nome').then(({ data }) => setHospitals(data ?? []));
     supabase.from('sectors').select('id, nome, hospital_id').eq('ativo', true).order('nome').then(({ data }) => setSectors(data ?? []));
   }, []);
 
@@ -162,12 +175,12 @@ export default function RelatorioFaturamento() {
 
       const fetchCooperadosPlantao = async () => {
         const PAGE = 1000;
-        let all: { cooperado_id: string; data_plantao: string }[] = [];
+        let all: { cooperado_id: string; data_plantao: string; hospital_id: string }[] = [];
         let from = 0;
         while (true) {
           let q = supabase
             .from('lancamentos_plantoes')
-            .select('cooperado_id, data_plantao')
+            .select('cooperado_id, data_plantao, hospital_id')
             .gte('data_plantao', inicioDate)
             .lte('data_plantao', fimDate)
             .range(from, from + PAGE - 1);
@@ -194,11 +207,21 @@ export default function RelatorioFaturamento() {
         cooperadosData,
       ] = await Promise.all([...basePromises, ...setoresPromises, fetchCooperadosPlantao()]);
 
-      // Cota parte é descontada uma vez por cooperado a cada fechamento (mensal)
-      const cooperadoMesUnicos = new Set(
-        cooperadosData.map(r => `${r.cooperado_id}|${String(r.data_plantao).slice(0, 7)}`)
-      ).size;
-      setCotaParte(cooperadoMesUnicos * DESCONTO_COTA_PARTE);
+      // Cota parte por projeto/cliente — descontada uma vez por cooperado distinto a cada mês, agrupada por hospital
+      // (o total geral e a exclusão dos projetos Saúde Móvel são calculados depois, no useMemo cotaPartePorCliente)
+      const porHospital = new Map<string, Set<string>>();
+      cooperadosData.forEach(r => {
+        const chave = `${r.cooperado_id}|${String(r.data_plantao).slice(0, 7)}`;
+        if (!porHospital.has(r.hospital_id)) porHospital.set(r.hospital_id, new Set());
+        porHospital.get(r.hospital_id)!.add(chave);
+      });
+      setCotaPartePorClienteRaw(
+        [...porHospital.entries()].map(([hospital_id, chaves]) => ({
+          hospital_id,
+          cooperados: chaves.size,
+          cotaParte: chaves.size * DESCONTO_COTA_PARTE,
+        }))
+      );
 
       const k = kpiData?.[0];
       setKpi(k ? {
@@ -222,16 +245,24 @@ export default function RelatorioFaturamento() {
     })();
   }, [inicio, fim, hospitalId, setorId]);
 
-  const margem     = (kpi?.faturamento ?? 0) - (kpi?.repasse ?? 0);
-  const pctRepasse = kpi?.faturamento ? (kpi.repasse / kpi.faturamento) * 100 : 0;
-
   const clientesComMargem = useMemo(() =>
-    clientes.map(c => ({
-      ...c,
-      margem:     c.faturamento - c.repasse,
-      pctRepasse: c.faturamento > 0 ? (c.repasse / c.faturamento) * 100 : 0,
-    })),
-  [clientes]);
+    clientes
+      .filter(c => clientesFiltro === null || clientesFiltro.has(c.hospital_id))
+      .map(c => ({
+        ...c,
+        margem:     c.faturamento - c.repasse,
+        pctRepasse: c.faturamento > 0 ? (c.repasse / c.faturamento) * 100 : 0,
+      })),
+  [clientes, clientesFiltro]);
+
+  // Totais gerais somam só os clientes marcados no filtro de clientes (kpi.total_plantoes fica de fora,
+  // é só um número de apoio e não temos a contagem de plantões por cliente aqui).
+  const kpiFiltrado = useMemo(() => ({
+    faturamento: clientesComMargem.reduce((s, c) => s + c.faturamento, 0),
+    repasse:     clientesComMargem.reduce((s, c) => s + c.repasse, 0),
+  }), [clientesComMargem]);
+
+  const margem = kpiFiltrado.faturamento - kpiFiltrado.repasse;
 
   // Totais de plantões por categoria
   const totEnfAtual = useMemo(() => catAtual.reduce((s, r)    => s + Number(r.enfermeiros), 0), [catAtual]);
@@ -376,17 +407,15 @@ export default function RelatorioFaturamento() {
     const sorted    = [...clientesComMargem].sort((a, b) => b.faturamento - a.faturamento);
     const maiorFat  = sorted[0];
     const maiorMarg = [...clientesComMargem].sort((a, b) => b.margem - a.margem)[0];
-    const maiorPct  = [...clientesComMargem].sort((a, b) => b.pctRepasse - a.pctRepasse)[0];
     const periodoAntLabel = labelPeriodoCurto(periodoAnt.inicioAnt, periodoAnt.fimAnt);
 
     const frases: string[] = [
       mostrarRepasse
-        ? `No período analisado, o faturamento total foi de ${formatCurrency(kpi.faturamento)}, com repasse de ${formatCurrency(kpi.repasse)} aos cooperados, resultando em margem operacional de ${formatCurrency(margem)} (${pctRepasse.toFixed(2)}% de repasse sobre o faturamento).`
-        : `No período analisado, o faturamento total foi de ${formatCurrency(kpi.faturamento)}.`,
+        ? `No período analisado, o faturamento total foi de ${formatCurrency(kpiFiltrado.faturamento)}, com repasse de ${formatCurrency(kpiFiltrado.repasse)} aos cooperados, resultando em margem operacional de ${formatCurrency(margem)}.`
+        : `No período analisado, o faturamento total foi de ${formatCurrency(kpiFiltrado.faturamento)}.`,
     ];
-    if (maiorFat)  frases.push(`O cliente com maior volume foi ${maiorFat.nome}, representando ${kpi.faturamento > 0 ? ((maiorFat.faturamento / kpi.faturamento) * 100).toFixed(2) : 0}% do faturamento total (${formatCurrency(maiorFat.faturamento)}).`);
+    if (maiorFat)  frases.push(`O cliente com maior volume foi ${maiorFat.nome}, representando ${kpiFiltrado.faturamento > 0 ? ((maiorFat.faturamento / kpiFiltrado.faturamento) * 100).toFixed(2) : 0}% do faturamento total (${formatCurrency(maiorFat.faturamento)}).`);
     if (mostrarRepasse && maiorMarg) frases.push(`A maior margem operacional foi registrada em ${maiorMarg.nome}, com ${formatCurrency(maiorMarg.margem)} de diferença entre faturado e repassado.`);
-    if (mostrarRepasse && maiorPct)  frases.push(`O maior percentual de repasse foi de ${maiorPct.pctRepasse.toFixed(2)}%, referente ao cliente ${maiorPct.nome}.`);
 
     // Análise de plantões por categoria
     const totalAtual = totEnfAtual + totTecAtual;
@@ -414,7 +443,7 @@ export default function RelatorioFaturamento() {
     obsSetores.forEach(f => frases.push(f));
 
     return frases;
-  }, [kpi, clientes, clientesComMargem, margem, pctRepasse, totEnfAtual, totTecAtual, totEnfAnt, totTecAnt, varEnf, varTec, periodoAnt, obsProf, obsSetores, mostrarRepasse]);
+  }, [kpi, clientes, clientesComMargem, kpiFiltrado, margem, totEnfAtual, totTecAtual, totEnfAnt, totTecAnt, varEnf, varTec, periodoAnt, obsProf, obsSetores, mostrarRepasse]);
 
   const periodo  = labelPeriodo(inicio, fim);
   const dataGer  = hoje.toLocaleDateString('pt-BR');
@@ -428,26 +457,100 @@ export default function RelatorioFaturamento() {
     });
   }, [clientesComMargem, hospitals]);
 
+  // Cota parte por projeto/cliente — junta a contagem calculada acima com o nome do cliente.
+  // Projetos "Saúde Móvel" não arrecadam cota parte (continuam no relatório normalmente,
+  // só não entram nessa contagem). Também respeita o filtro de clientes marcados.
+  const cotaPartePorCliente = useMemo(() => {
+    const nomeMap = new Map(hospitals.map(h => [h.id, h.nome]));
+    return cotaPartePorClienteRaw
+      .map(r => ({ ...r, nome: nomeMap.get(r.hospital_id) ?? '—' }))
+      .filter(r => !r.nome.toLowerCase().includes('saúde móvel') && !r.nome.toLowerCase().includes('saude movel'))
+      .filter(r => clientesFiltro === null || clientesFiltro.has(r.hospital_id))
+      .sort((a, b) => b.cotaParte - a.cotaParte);
+  }, [cotaPartePorClienteRaw, hospitals, clientesFiltro]);
+
+  const cotaParte = useMemo(() =>
+    cotaPartePorCliente.reduce((s, c) => s + c.cotaParte, 0),
+  [cotaPartePorCliente]);
+
   const taxaAdministrativaTotal = useMemo(() =>
     taxaAdministrativaPorCliente.reduce((s, c) => s + c.taxaValor, 0),
   [taxaAdministrativaPorCliente]);
 
-  // Extrato Financeiro — complemento; reaproveita kpi.faturamento, kpi.repasse e cotaParte já carregados acima
-  // A Taxa Administrativa entra no Valor Bruto Total, que passa a ser a base do PIS/COFINS/Líquido
+  // Respeita o checkbox "Taxa Administrativa" em Indicadores: desmarcado, o relatório deixa de considerá-la em qualquer cálculo (produção pura, sem a taxa)
+  const taxaAdministrativaAtiva = indicadoresVisiveis.taxaAdministrativa;
+  const taxaAdministrativaAplicada = taxaAdministrativaAtiva ? taxaAdministrativaTotal : 0;
+
+  // ISS retido por cliente — usa hospitals.retem_iss do cadastro; incide sobre o valor bruto total (faturamento + taxa administrativa, se considerada) do próprio cliente
+  const issRetidoPorCliente = useMemo(() => {
+    const retemIssMap = new Map(hospitals.map(h => [h.id, h.retem_iss === true]));
+    return taxaAdministrativaPorCliente.map(c => {
+      const retemIss = retemIssMap.get(c.hospital_id) ?? false;
+      const taxaValorAplicada = taxaAdministrativaAtiva ? c.taxaValor : 0;
+      const valorBrutoClienteTotal = c.faturamento + taxaValorAplicada;
+      const issValor = retemIss ? valorBrutoClienteTotal * (ALIQUOTA_ISS / 100) : 0;
+      return { ...c, retemIss, issValor, valorBrutoClienteTotal };
+    });
+  }, [taxaAdministrativaPorCliente, hospitals, taxaAdministrativaAtiva]);
+
+  const issRetidoTotal = useMemo(() =>
+    issRetidoPorCliente.reduce((s, c) => s + c.issValor, 0),
+  [issRetidoPorCliente]);
+
+  // Extrato Financeiro — complemento; reaproveita kpiFiltrado e cotaParte já calculados acima
+  // A Taxa Administrativa só entra no Valor Bruto Total (afetando PIS/COFINS/ISS/Líquido) quando o indicador está marcado
   const extratoFinanceiro = useMemo(() => {
-    const valorBrutoNF    = kpi?.faturamento ?? 0;
-    const valorBrutoTotal = valorBrutoNF + taxaAdministrativaTotal;
+    const valorBrutoNF    = kpiFiltrado.faturamento;
+    const valorBrutoTotal = valorBrutoNF + taxaAdministrativaAplicada;
     const pis          = valorBrutoTotal * 0.0065;
     const cofins       = valorBrutoTotal * 0.03;
-    const totalRetido  = valorBrutoTotal * 0.0365;
+    const iss          = issRetidoTotal;
+    const totalRetido  = pis + cofins + iss;
     const valorLiquido = valorBrutoTotal - totalRetido;
 
-    const repasseTotal   = kpi?.repasse ?? 0;
+    const repasseTotal   = kpiFiltrado.repasse;
     const inssPatronal   = repasseTotal * 0.20;
     const cotaParteTotal = cotaParte;
 
-    return { valorBrutoNF, valorBrutoTotal, pis, cofins, totalRetido, valorLiquido, repasseTotal, inssPatronal, cotaParteTotal };
-  }, [kpi, cotaParte, taxaAdministrativaTotal]);
+    return { valorBrutoNF, valorBrutoTotal, pis, cofins, iss, totalRetido, valorLiquido, repasseTotal, inssPatronal, cotaParteTotal };
+  }, [kpiFiltrado, cotaParte, taxaAdministrativaAplicada, issRetidoTotal]);
+
+  // Relatório Consolidado Mensal por Setor — só se aplica quando um cliente específico está selecionado
+  // e esse cliente tem "Gerar relatório consolidado mensal" marcado no cadastro (hospitals.gerar_relatorio_consolidado).
+  // Reaproveita setoresAtual (já carregado via RPC relatorio_setores_cliente quando hospitalId está definido) e
+  // replica exatamente a mesma matemática do Extrato Financeiro acima, apenas decompondo por setor.
+  const hospitalSelecionado = useMemo(() =>
+    hospitals.find(h => h.id === hospitalId) ?? null,
+  [hospitals, hospitalId]);
+
+  const mostrarConsolidado = !!hospitalId && hospitalSelecionado?.gerar_relatorio_consolidado === true;
+
+  const consolidadoPorSetor = useMemo(() => {
+    if (!hospitalSelecionado) return [];
+    const taxaPct   = Number(hospitalSelecionado.taxa_administrativa ?? 0);
+    const retemIss  = hospitalSelecionado.retem_iss === true;
+    return setoresAtual.map(s => {
+      const valorBrutoNF    = s.faturamento;
+      const taxaAdm         = taxaAdministrativaAtiva ? valorBrutoNF * (taxaPct / 100) : 0;
+      const valorBrutoTotal = valorBrutoNF + taxaAdm;
+      const pisCofins       = valorBrutoTotal * 0.0365;
+      const iss             = retemIss ? valorBrutoTotal * (ALIQUOTA_ISS / 100) : 0;
+      const totalDescontos  = pisCofins + iss;
+      const valorLiquido    = valorBrutoTotal - totalDescontos;
+      return { ...s, valorBrutoNF, taxaAdm, valorBrutoTotal, pisCofins, iss, totalDescontos, valorLiquido };
+    });
+  }, [setoresAtual, hospitalSelecionado, taxaAdministrativaAtiva]);
+
+  const consolidadoTotais = useMemo(() => consolidadoPorSetor.reduce((acc, s) => ({
+    valorBrutoNF:    acc.valorBrutoNF    + s.valorBrutoNF,
+    taxaAdm:         acc.taxaAdm         + s.taxaAdm,
+    valorBrutoTotal: acc.valorBrutoTotal + s.valorBrutoTotal,
+    pisCofins:       acc.pisCofins       + s.pisCofins,
+    iss:             acc.iss             + s.iss,
+    totalDescontos:  acc.totalDescontos  + s.totalDescontos,
+    valorLiquido:    acc.valorLiquido    + s.valorLiquido,
+  }), { valorBrutoNF: 0, taxaAdm: 0, valorBrutoTotal: 0, pisCofins: 0, iss: 0, totalDescontos: 0, valorLiquido: 0 }),
+  [consolidadoPorSetor]);
 
   return (
     <>
@@ -465,7 +568,7 @@ export default function RelatorioFaturamento() {
       `}</style>
 
       {/* Barra de controles — oculta na impressão */}
-      <div className="no-print sticky top-0 z-10 bg-slate-50 border-b px-6 py-3 flex flex-wrap items-center gap-4 shadow-sm">
+      <div className="no-print sticky top-0 z-10 bg-muted/40 border-b px-6 py-3 flex flex-wrap items-center gap-4 shadow-sm">
         <Button variant="ghost" size="sm" onClick={() => navigate('/')} className="gap-1.5">
           <ArrowLeft className="h-4 w-4" /> Voltar
         </Button>
@@ -516,6 +619,43 @@ export default function RelatorioFaturamento() {
             </SelectContent>
           </Select>
         </div>
+        {!hospitalId && (
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="outline" size="sm" className="gap-1.5">
+                <SlidersHorizontal className="h-4 w-4" />
+                Clientes {clientesFiltro !== null && `(${clientesFiltro.size}/${hospitals.length})`}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-64">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-xs font-semibold text-muted-foreground">Clientes no relatório</p>
+                <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => setClientesFiltro(null)}>
+                  Selecionar todos
+                </Button>
+              </div>
+              <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                {hospitals.map(h => {
+                  const checked = clientesFiltro === null || clientesFiltro.has(h.id);
+                  return (
+                    <label key={h.id} className="flex items-center gap-2 text-sm cursor-pointer select-none">
+                      <Checkbox
+                        checked={checked}
+                        onCheckedChange={v => setClientesFiltro(prev => {
+                          const base = prev ?? new Set(hospitals.map(x => x.id));
+                          const next = new Set(base);
+                          if (v === true) next.add(h.id); else next.delete(h.id);
+                          return next;
+                        })}
+                      />
+                      {h.nome}
+                    </label>
+                  );
+                })}
+              </div>
+            </PopoverContent>
+          </Popover>
+        )}
         <Popover>
           <PopoverTrigger asChild>
             <Button variant="outline" size="sm" className="gap-1.5 ml-auto">
@@ -568,6 +708,7 @@ export default function RelatorioFaturamento() {
             <TabsList className="no-print mb-6">
               <TabsTrigger value="analises">Análises</TabsTrigger>
               <TabsTrigger value="extrato">Extrato Financeiro</TabsTrigger>
+              {mostrarConsolidado && <TabsTrigger value="consolidado">Relatório Consolidado</TabsTrigger>}
             </TabsList>
 
             <TabsContent value="analises" forceMount className="report-tab-content">
@@ -578,26 +719,25 @@ export default function RelatorioFaturamento() {
               </h3>
               {(() => {
                 const cards = [
-                  { key: 'faturado',           label: 'Total Faturado',      value: formatCurrency(kpi?.faturamento ?? 0), accent: NAVY  },
-                  { key: 'repassado',          label: 'Total Repassado',     value: formatCurrency(kpi?.repasse     ?? 0), accent: GREEN },
-                  { key: 'taxaAdministrativa', label: 'Taxa Administrativa', value: formatCurrency(taxaAdministrativaTotal), accent: GOLD },
-                  { key: 'pctRepasse',         label: '% de Repasse',        value: `${pctRepasse.toFixed(2)}%`,           accent: GOLD },
-                  { key: 'cotaParte',          label: 'Cota Parte',          value: formatCurrency(cotaParte),             accent: GOLD },
+                  { key: 'faturado',           label: 'Total Faturado',      value: formatCurrency(kpiFiltrado.faturamento), accent: NAVY,  primary: true },
+                  { key: 'repassado',          label: 'Total Repassado',     value: formatCurrency(kpiFiltrado.repasse),     accent: GREEN, primary: true },
+                  { key: 'taxaAdministrativa', label: 'Taxa Administrativa', value: formatCurrency(taxaAdministrativaTotal), accent: MUTED_LIGHT, primary: false },
+                  { key: 'cotaParte',          label: 'Cota Parte',          value: formatCurrency(cotaParte),             accent: MUTED_LIGHT, primary: false },
                 ].filter(card => indicadoresVisiveis[card.key]);
                 return (
                   <div className={`grid ${GRID_COLS[cards.length] ?? 'grid-cols-1'} gap-4`}>
                     {cards.map(card => (
-                      <div key={card.key} className="rounded-md border bg-white p-4"
+                      <div key={card.key} className="rounded-lg border bg-white p-4"
                         style={{ borderColor: BORDER, borderLeft: `3px solid ${card.accent}` }}>
-                        <p className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold">{card.label}</p>
+                        <p className="text-[10px] uppercase tracking-wider font-semibold" style={{ color: MUTED }}>{card.label}</p>
                         <p className="text-xl font-bold tabular-nums mt-1.5" style={{ color: INK }}>{card.value}</p>
                       </div>
                     ))}
                   </div>
                 );
               })()}
-              <p className="text-xs text-gray-400 mt-3">
-                Total de plantões lançados no período: <strong>{kpi?.total_plantoes ?? 0}</strong>
+              <p className="text-xs mt-3" style={{ color: MUTED_LIGHT }}>
+                Total de plantões lançados no período: <strong style={{ color: MUTED }}>{kpi?.total_plantoes ?? 0}</strong>
               </p>
             </section>
 
@@ -612,35 +752,65 @@ export default function RelatorioFaturamento() {
                     <th className="text-left px-4 py-2.5 font-semibold">Cliente</th>
                     <th className="text-right px-4 py-2.5 font-semibold">Valor Faturado</th>
                     {mostrarRepasse && <th className="text-right px-4 py-2.5 font-semibold">Valor Repassado</th>}
-                    {mostrarRepasse && <th className="text-right px-4 py-2.5 font-semibold">Margem</th>}
-                    {mostrarRepasse && <th className="text-right px-4 py-2.5 font-semibold">% Repasse</th>}
+                    <th className="text-right px-4 py-2.5 font-semibold">Taxa Administrativa</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {clientesComMargem.map((c, i) => (
+                  {taxaAdministrativaPorCliente.map((c, i) => (
                     <tr key={c.hospital_id} style={{ backgroundColor: i % 2 === 0 ? '#f8f9fc' : 'white' }}>
                       <td className="px-4 py-2.5 font-medium" style={{ color: INK }}>{c.nome}</td>
                       <td className="px-4 py-2.5 text-right tabular-nums" style={{ color: INK }}>{formatCurrency(c.faturamento)}</td>
                       {mostrarRepasse && <td className="px-4 py-2.5 text-right tabular-nums" style={{ color: INK }}>{formatCurrency(c.repasse)}</td>}
-                      {mostrarRepasse && <td className="px-4 py-2.5 text-right tabular-nums" style={{ color: INK }}>{formatCurrency(c.margem)}</td>}
-                      {mostrarRepasse && (
-                        <td className="px-4 py-2.5 text-right tabular-nums font-semibold"
-                          style={{ color: c.pctRepasse > 80 ? DANGER : INK }}>
-                          {c.pctRepasse.toFixed(2)}%
-                        </td>
-                      )}
+                      <td className="px-4 py-2.5 text-right tabular-nums" style={{ color: INK }}>
+                        {formatCurrency(c.taxaValor)}
+                        <span className="text-xs ml-1" style={{ color: MUTED_LIGHT }}>({c.taxaPct}%)</span>
+                      </td>
                     </tr>
                   ))}
                   <tr style={{ backgroundColor: NAVY, color: 'white', fontWeight: 700, borderTop: '3px double rgba(255,255,255,0.55)' }}>
                     <td className="px-4 py-2.5">TOTAL GERAL</td>
-                    <td className="px-4 py-2.5 text-right tabular-nums">{formatCurrency(kpi?.faturamento ?? 0)}</td>
-                    {mostrarRepasse && <td className="px-4 py-2.5 text-right tabular-nums">{formatCurrency(kpi?.repasse ?? 0)}</td>}
-                    {mostrarRepasse && <td className="px-4 py-2.5 text-right tabular-nums">{formatCurrency(margem)}</td>}
-                    {mostrarRepasse && <td className="px-4 py-2.5 text-right tabular-nums">{pctRepasse.toFixed(2)}%</td>}
+                    <td className="px-4 py-2.5 text-right tabular-nums">{formatCurrency(kpiFiltrado.faturamento)}</td>
+                    {mostrarRepasse && <td className="px-4 py-2.5 text-right tabular-nums">{formatCurrency(kpiFiltrado.repasse)}</td>}
+                    <td className="px-4 py-2.5 text-right tabular-nums">{formatCurrency(taxaAdministrativaTotal)}</td>
                   </tr>
                 </tbody>
               </table>
             </section>
+
+            {/* Seção 2b — Cota Parte por Projeto (Cliente) */}
+            {indicadoresVisiveis.cotaParte && cotaPartePorCliente.length > 0 && (
+              <section className="mb-10 break-avoid">
+                <h3 className="text-[11px] font-bold uppercase tracking-[0.15em] mb-4 pb-2 border-b" style={{ color: NAVY, fontFamily: SERIF, borderColor: BORDER }}>
+                  Cota Parte por Projeto (Cliente)
+                </h3>
+                <table className="w-full text-sm border-collapse">
+                  <thead>
+                    <tr style={{ backgroundColor: NAVY, color: 'white' }}>
+                      <th className="text-left px-4 py-2.5 font-semibold">Cliente / Projeto</th>
+                      <th className="text-right px-4 py-2.5 font-semibold">Cooperados</th>
+                      <th className="text-right px-4 py-2.5 font-semibold">Cota Parte</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {cotaPartePorCliente.map((c, i) => (
+                      <tr key={c.hospital_id} style={{ backgroundColor: i % 2 === 0 ? '#f8f9fc' : 'white' }}>
+                        <td className="px-4 py-2.5 font-medium" style={{ color: INK }}>{c.nome}</td>
+                        <td className="px-4 py-2.5 text-right tabular-nums" style={{ color: INK }}>{c.cooperados}</td>
+                        <td className="px-4 py-2.5 text-right tabular-nums" style={{ color: INK }}>{formatCurrency(c.cotaParte)}</td>
+                      </tr>
+                    ))}
+                    <tr style={{ backgroundColor: NAVY, color: 'white', fontWeight: 700, borderTop: '3px double rgba(255,255,255,0.55)' }}>
+                      <td className="px-4 py-2.5">TOTAL GERAL</td>
+                      <td className="px-4 py-2.5"></td>
+                      <td className="px-4 py-2.5 text-right tabular-nums">{formatCurrency(cotaParte)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+                <p className="text-xs mt-2" style={{ color: MUTED_LIGHT }}>
+                  R$80 por cooperado distinto que atendeu o cliente em cada mês do período. Cooperados que atenderam mais de um cliente no mesmo mês são contados em cada um.
+                </p>
+              </section>
+            )}
 
             {/* Seção 3 — Gráficos */}
             {clientesComMargem.length > 0 && (
@@ -648,18 +818,18 @@ export default function RelatorioFaturamento() {
                 <h3 className="text-[11px] font-bold uppercase tracking-[0.15em] mb-4 pb-2 border-b" style={{ color: NAVY, fontFamily: SERIF, borderColor: BORDER }}>
                   Análise Gráfica
                 </h3>
-                <div className="grid grid-cols-2 gap-8">
+                <div className="grid grid-cols-2 gap-6">
                   {/* Barras */}
-                  <div>
-                    <p className="text-xs text-gray-500 font-semibold mb-3">Faturado vs Repassado por Cliente</p>
+                  <div className="rounded-lg border p-4" style={{ borderColor: BORDER }}>
+                    <p className="text-xs font-semibold mb-3" style={{ color: MUTED }}>Faturado vs Repassado por Cliente</p>
                     <ResponsiveContainer width="100%" height={220}>
                       <BarChart data={clientesComMargem} margin={{ top: 4, right: 8, left: 0, bottom: 50 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                        <XAxis dataKey="nome" tick={{ fontSize: 9 }} angle={-35} textAnchor="end" interval={0} />
-                        <YAxis tickFormatter={fmtK} tick={{ fontSize: 9 }} width={65} />
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
+                        <XAxis dataKey="nome" tick={{ fontSize: 9 }} angle={-35} textAnchor="end" interval={0} stroke={BORDER} />
+                        <YAxis tickFormatter={fmtK} tick={{ fontSize: 9 }} width={65} stroke={BORDER} />
                         <Tooltip
                           formatter={(v: number, n: string) => [formatCurrency(v), n]}
-                          contentStyle={{ fontSize: 11, borderRadius: 6 }}
+                          contentStyle={{ fontSize: 11, borderRadius: 6, border: `1px solid ${BORDER}` }}
                         />
                         <Legend wrapperStyle={{ fontSize: 11 }} />
                         <Bar dataKey="faturamento" name="Faturado"   fill={NAVY}  radius={[3,3,0,0]} />
@@ -669,8 +839,8 @@ export default function RelatorioFaturamento() {
                   </div>
 
                   {/* Pizza */}
-                  <div>
-                    <p className="text-xs text-gray-500 font-semibold mb-3">Distribuição do Faturamento (%)</p>
+                  <div className="rounded-lg border p-4" style={{ borderColor: BORDER }}>
+                    <p className="text-xs font-semibold mb-3" style={{ color: MUTED }}>Distribuição do Faturamento (%)</p>
                     <ResponsiveContainer width="100%" height={220}>
                       <PieChart>
                         <Pie
@@ -688,7 +858,7 @@ export default function RelatorioFaturamento() {
                         </Pie>
                         <Tooltip
                           formatter={(v: number) => [formatCurrency(v), 'Faturamento']}
-                          contentStyle={{ fontSize: 11, borderRadius: 6 }}
+                          contentStyle={{ fontSize: 11, borderRadius: 6, border: `1px solid ${BORDER}` }}
                         />
                         <Legend
                           wrapperStyle={{ fontSize: 10 }}
@@ -710,11 +880,11 @@ export default function RelatorioFaturamento() {
 
                 <div className="grid grid-cols-2 gap-6">
                   {/* Card Enfermeiros */}
-                  <div className="rounded-xl border p-5" style={{ borderColor: '#e5e7eb' }}>
+                  <div className="rounded-lg border p-5" style={{ borderColor: BORDER }}>
                     <div className="flex items-center justify-between mb-3">
                       <p className="text-[11px] font-bold uppercase tracking-wider text-gray-400">Enfermeiros</p>
                       <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold"
-                        style={{ backgroundColor: '#eff6ff', color: NAVY }}>
+                        style={{ backgroundColor: PILL_NAVY_BG, color: NAVY }}>
                         {totEnfAtual + totTecAtual > 0
                           ? `${((totEnfAtual / (totEnfAtual + totTecAtual)) * 100).toFixed(0)}% do total`
                           : '—'}
@@ -746,11 +916,11 @@ export default function RelatorioFaturamento() {
                   </div>
 
                   {/* Card Técnicos */}
-                  <div className="rounded-xl border p-5" style={{ borderColor: '#e5e7eb' }}>
+                  <div className="rounded-lg border p-5" style={{ borderColor: BORDER }}>
                     <div className="flex items-center justify-between mb-3">
                       <p className="text-[11px] font-bold uppercase tracking-wider text-gray-400">Técnicos de Enfermagem</p>
                       <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold"
-                        style={{ backgroundColor: '#f0fdf4', color: GREEN }}>
+                        style={{ backgroundColor: PILL_GREEN_BG, color: GREEN }}>
                         {totEnfAtual + totTecAtual > 0
                           ? `${((totTecAtual / (totEnfAtual + totTecAtual)) * 100).toFixed(0)}% do total`
                           : '—'}
@@ -812,7 +982,7 @@ export default function RelatorioFaturamento() {
                         const novo   = qtdAt > 0 && qtdAn === 0;
                         return (
                           <tr key={prof} style={{
-                            backgroundColor: sumido ? '#fff5f5' : novo ? '#f0fdf4' : i % 2 === 0 ? '#f8f9fc' : 'white',
+                            backgroundColor: i % 2 === 0 ? SURFACE : 'white',
                           }}>
                             <td className="px-4 py-2 font-medium">
                               {PROF_LABEL[prof] ?? prof}
@@ -824,7 +994,7 @@ export default function RelatorioFaturamento() {
                             <td className="px-4 py-2 text-right tabular-nums font-medium">{qtdAt || '—'}</td>
                             <td className="px-4 py-2 text-right tabular-nums font-medium">{fatAt > 0 ? formatCurrency(fatAt) : '—'}</td>
                             <td className="px-4 py-2 text-right tabular-nums font-semibold"
-                              style={{ color: varPct == null ? '#9ca3af' : varPct > 0 ? '#16a34a' : varPct < 0 ? '#dc2626' : '#9ca3af' }}>
+                              style={{ color: varPct == null ? MUTED_LIGHT : varPct > 0 ? GREEN : varPct < 0 ? DANGER : MUTED_LIGHT }}>
                               {sumido ? '−100%' : novo ? 'Novo' : varPct == null ? '—' : `${varPct > 0 ? '+' : ''}${varPct.toFixed(1)}%`}
                             </td>
                           </tr>
@@ -938,18 +1108,21 @@ export default function RelatorioFaturamento() {
               <h3 className="text-[11px] font-bold uppercase tracking-[0.15em] mb-4 pb-2 border-b" style={{ color: NAVY, fontFamily: SERIF, borderColor: BORDER }}>
                 Análise e Observações
               </h3>
-              <div className="rounded-xl p-5 text-sm leading-relaxed space-y-3"
-                style={{ backgroundColor: '#f8f9fc', borderLeft: `4px solid ${NAVY}` }}>
-                {analise.map((texto, i) => (
-                  <p key={i} style={{ color: '#374151' }}>
-                    {texto}
-                  </p>
-                ))}
-                {analise.length === 0 && (
-                  <p className="text-gray-400 italic">Sem dados suficientes para análise.</p>
+              <div className="rounded-lg border p-5 text-sm" style={{ borderColor: BORDER, backgroundColor: SURFACE }}>
+                {analise.length === 0 ? (
+                  <p className="italic" style={{ color: MUTED_LIGHT }}>Sem dados suficientes para análise.</p>
+                ) : (
+                  <ul className="space-y-2.5">
+                    {analise.map((texto, i) => (
+                      <li key={i} className="flex gap-2.5 leading-relaxed" style={{ color: INK }}>
+                        <span className="mt-[7px] h-1.5 w-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: NAVY }} />
+                        <span>{texto}</span>
+                      </li>
+                    ))}
+                  </ul>
                 )}
               </div>
-              <p className="text-[10px] text-gray-400 mt-6 text-center">
+              <p className="text-[10px] mt-6 text-center" style={{ color: MUTED_LIGHT }}>
                 Documento gerado automaticamente pelo sistema CADES Financeiro — Confidencial
               </p>
             </section>
@@ -977,11 +1150,15 @@ export default function RelatorioFaturamento() {
                     <td className="px-4 py-2.5 text-right tabular-nums" style={{ color: INK }}>{formatCurrency(extratoFinanceiro.valorBrutoNF)}</td>
                   </tr>
                   <tr style={{ backgroundColor: 'white' }}>
-                    <td className="px-4 py-2.5" style={{ color: INK }}>(+) Taxa Administrativa</td>
-                    <td className="px-4 py-2.5 text-right tabular-nums" style={{ color: GOLD }}>{formatCurrency(taxaAdministrativaTotal)}</td>
+                    <td className="px-4 py-2.5" style={{ color: INK }}>
+                      (+) Taxa Administrativa{!taxaAdministrativaAtiva && ' (não considerada — indicador desmarcado)'}
+                    </td>
+                    <td className="px-4 py-2.5 text-right tabular-nums" style={{ color: GOLD }}>{formatCurrency(taxaAdministrativaAplicada)}</td>
                   </tr>
                   <tr style={{ backgroundColor: '#f8f9fc', fontWeight: 600, borderTop: `1px solid ${BORDER}` }}>
-                    <td className="px-4 py-2.5" style={{ color: INK }}>(=) Valor Bruto Total (NF + Taxa Administrativa)</td>
+                    <td className="px-4 py-2.5" style={{ color: INK }}>
+                      (=) Valor Bruto Total {taxaAdministrativaAtiva ? '(NF + Taxa Administrativa)' : '(apenas NF — produção)'}
+                    </td>
                     <td className="px-4 py-2.5 text-right tabular-nums" style={{ color: INK }}>{formatCurrency(extratoFinanceiro.valorBrutoTotal)}</td>
                   </tr>
                   <tr style={{ backgroundColor: 'white' }}>
@@ -994,6 +1171,16 @@ export default function RelatorioFaturamento() {
                   </tr>
                   <tr style={{ backgroundColor: 'white', fontWeight: 600, borderTop: `1px solid ${BORDER}` }}>
                     <td className="px-4 py-2.5" style={{ color: INK }}>(=) Total das Contribuições Sociais Retidas (3,65%)</td>
+                    <td className="px-4 py-2.5 text-right tabular-nums" style={{ color: DANGER }}>{formatCurrency(extratoFinanceiro.pis + extratoFinanceiro.cofins)}</td>
+                  </tr>
+                  {extratoFinanceiro.iss > 0 && (
+                    <tr style={{ backgroundColor: '#f8f9fc' }}>
+                      <td className="px-4 py-2.5" style={{ color: INK }}>(−) ISS Retido ({ALIQUOTA_ISS.toLocaleString('pt-BR')}%) — clientes com retenção na fonte</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums" style={{ color: DANGER }}>{formatCurrency(extratoFinanceiro.iss)}</td>
+                    </tr>
+                  )}
+                  <tr style={{ backgroundColor: 'white', fontWeight: 600, borderTop: `1px solid ${BORDER}` }}>
+                    <td className="px-4 py-2.5" style={{ color: INK }}>(=) Total Geral Retido</td>
                     <td className="px-4 py-2.5 text-right tabular-nums" style={{ color: DANGER }}>{formatCurrency(extratoFinanceiro.totalRetido)}</td>
                   </tr>
                   <tr style={{ backgroundColor: NAVY, color: 'white', fontWeight: 700, borderTop: '3px double rgba(255,255,255,0.55)' }}>
@@ -1003,15 +1190,15 @@ export default function RelatorioFaturamento() {
                 </tbody>
               </table>
 
-              {/* Detalhamento da Taxa Administrativa por Cliente — especifica a linha "(+) Taxa Administrativa" acima */}
-              {taxaAdministrativaPorCliente.length > 0 && (
+              {/* Detalhamento da Taxa Administrativa por Cliente — especifica a linha "(+) Taxa Administrativa" acima; some quando o indicador está desmarcado */}
+              {taxaAdministrativaAtiva && taxaAdministrativaPorCliente.length > 0 && (
                 <>
-                  <h4 className="text-[10px] font-bold uppercase tracking-[0.15em] mt-6 mb-3" style={{ color: GOLD }}>
+                  <h4 className="text-[10px] font-bold uppercase tracking-[0.15em] mt-6 mb-3" style={{ color: MUTED }}>
                     Detalhamento da Taxa Administrativa por Cliente
                   </h4>
                   <table className="w-full text-sm border-collapse mb-6">
                     <thead>
-                      <tr style={{ backgroundColor: NAVY, color: 'white' }}>
+                      <tr style={{ backgroundColor: SURFACE_ALT, color: NAVY, borderBottom: `1px solid ${BORDER}` }}>
                         <th className="text-left px-4 py-2.5 font-semibold">Cliente</th>
                         <th className="text-right px-4 py-2.5 font-semibold">Valor de Cobrança</th>
                         <th className="text-right px-4 py-2.5 font-semibold">Taxa (%)</th>
@@ -1020,7 +1207,7 @@ export default function RelatorioFaturamento() {
                     </thead>
                     <tbody>
                       {taxaAdministrativaPorCliente.map((c, i) => (
-                        <tr key={c.hospital_id} style={{ backgroundColor: i % 2 === 0 ? '#f8f9fc' : 'white' }}>
+                        <tr key={c.hospital_id} style={{ backgroundColor: i % 2 === 0 ? SURFACE : 'white' }}>
                           <td className="px-4 py-2.5 font-medium" style={{ color: INK }}>{c.nome}</td>
                           <td className="px-4 py-2.5 text-right tabular-nums" style={{ color: INK }}>{formatCurrency(c.faturamento)}</td>
                           <td className="px-4 py-2.5 text-right tabular-nums" style={{ color: INK }}>{c.taxaPct.toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}%</td>
@@ -1030,6 +1217,39 @@ export default function RelatorioFaturamento() {
                       <tr style={{ backgroundColor: NAVY, color: 'white', fontWeight: 700, borderTop: '3px double rgba(255,255,255,0.55)' }}>
                         <td className="px-4 py-2.5" colSpan={3}>TOTAL — Taxa Administrativa</td>
                         <td className="px-4 py-2.5 text-right tabular-nums">{formatCurrency(taxaAdministrativaTotal)}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </>
+              )}
+
+              {/* Detalhamento do ISS Retido por Cliente — apenas clientes com "Cliente retém ISS" marcado no cadastro */}
+              {issRetidoPorCliente.some(c => c.retemIss) && (
+                <>
+                  <h4 className="text-[10px] font-bold uppercase tracking-[0.15em] mt-6 mb-3" style={{ color: MUTED }}>
+                    Detalhamento do ISS Retido por Cliente
+                  </h4>
+                  <table className="w-full text-sm border-collapse mb-6">
+                    <thead>
+                      <tr style={{ backgroundColor: SURFACE_ALT, color: NAVY, borderBottom: `1px solid ${BORDER}` }}>
+                        <th className="text-left px-4 py-2.5 font-semibold">Cliente</th>
+                        <th className="text-right px-4 py-2.5 font-semibold">Valor Bruto Total</th>
+                        <th className="text-right px-4 py-2.5 font-semibold">Alíquota</th>
+                        <th className="text-right px-4 py-2.5 font-semibold">ISS Retido</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {issRetidoPorCliente.filter(c => c.retemIss).map((c, i) => (
+                        <tr key={c.hospital_id} style={{ backgroundColor: i % 2 === 0 ? SURFACE : 'white' }}>
+                          <td className="px-4 py-2.5 font-medium" style={{ color: INK }}>{c.nome}</td>
+                          <td className="px-4 py-2.5 text-right tabular-nums" style={{ color: INK }}>{formatCurrency(c.valorBrutoClienteTotal)}</td>
+                          <td className="px-4 py-2.5 text-right tabular-nums" style={{ color: INK }}>{ALIQUOTA_ISS.toLocaleString('pt-BR')}%</td>
+                          <td className="px-4 py-2.5 text-right tabular-nums font-semibold" style={{ color: DANGER }}>{formatCurrency(c.issValor)}</td>
+                        </tr>
+                      ))}
+                      <tr style={{ backgroundColor: NAVY, color: 'white', fontWeight: 700, borderTop: '3px double rgba(255,255,255,0.55)' }}>
+                        <td className="px-4 py-2.5" colSpan={3}>TOTAL — ISS Retido</td>
+                        <td className="px-4 py-2.5 text-right tabular-nums">{formatCurrency(issRetidoTotal)}</td>
                       </tr>
                     </tbody>
                   </table>
@@ -1061,6 +1281,65 @@ export default function RelatorioFaturamento() {
               </table>
             </section>
             </TabsContent>
+
+            {mostrarConsolidado && (
+              <TabsContent value="consolidado" forceMount className="report-tab-content">
+                <section id="relatorio-consolidado" className="break-avoid">
+                  <h3 className="text-[11px] font-bold uppercase tracking-[0.15em] pb-2 border-b" style={{ color: NAVY, fontFamily: SERIF, borderColor: BORDER }}>
+                    Relatório Consolidado Mensal
+                  </h3>
+                  <p className="text-xs text-gray-500 mt-2 mb-4 italic">
+                    Consolidado de todos os setores/unidades de {hospitalNome || 'cliente'} faturados no período — {periodo}. Uso interno do financeiro para conferência e envio ao cliente.
+                  </p>
+
+                  {consolidadoPorSetor.length === 0 ? (
+                    <p className="text-sm italic" style={{ color: MUTED_LIGHT }}>Nenhum setor com faturamento neste período.</p>
+                  ) : (
+                    <table className="w-full text-sm border-collapse">
+                      <thead>
+                        <tr style={{ backgroundColor: NAVY, color: 'white' }}>
+                          <th className="text-left px-3 py-2.5 font-semibold">Setor</th>
+                          <th className="text-right px-3 py-2.5 font-semibold">Valor Bruto Faturado</th>
+                          {taxaAdministrativaAtiva && <th className="text-right px-3 py-2.5 font-semibold">(+) Taxa Administrativa</th>}
+                          {taxaAdministrativaAtiva && <th className="text-right px-3 py-2.5 font-semibold">(=) Valor Bruto Total</th>}
+                          <th className="text-right px-3 py-2.5 font-semibold">(−) Impostos NF (PIS/COFINS)</th>
+                          {hospitalSelecionado?.retem_iss && <th className="text-right px-3 py-2.5 font-semibold">(−) ISS Retido</th>}
+                          <th className="text-right px-3 py-2.5 font-semibold">(=) Total de Descontos</th>
+                          <th className="text-right px-3 py-2.5 font-semibold">(=) Valor Líquido a Receber</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {consolidadoPorSetor.map((s, i) => (
+                          <tr key={s.setor_id} style={{ backgroundColor: i % 2 === 0 ? SURFACE : 'white' }}>
+                            <td className="px-3 py-2.5 font-medium" style={{ color: INK }}>{s.setor_nome}</td>
+                            <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: INK }}>{formatCurrency(s.valorBrutoNF)}</td>
+                            {taxaAdministrativaAtiva && <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: GOLD }}>{formatCurrency(s.taxaAdm)}</td>}
+                            {taxaAdministrativaAtiva && <td className="px-3 py-2.5 text-right tabular-nums font-semibold" style={{ color: INK }}>{formatCurrency(s.valorBrutoTotal)}</td>}
+                            <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: DANGER }}>{formatCurrency(s.pisCofins)}</td>
+                            {hospitalSelecionado?.retem_iss && <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: DANGER }}>{formatCurrency(s.iss)}</td>}
+                            <td className="px-3 py-2.5 text-right tabular-nums font-semibold" style={{ color: DANGER }}>{formatCurrency(s.totalDescontos)}</td>
+                            <td className="px-3 py-2.5 text-right tabular-nums font-semibold" style={{ color: INK }}>{formatCurrency(s.valorLiquido)}</td>
+                          </tr>
+                        ))}
+                        <tr style={{ backgroundColor: NAVY, color: 'white', fontWeight: 700, borderTop: '3px double rgba(255,255,255,0.55)' }}>
+                          <td className="px-3 py-2.5">TOTAL GERAL</td>
+                          <td className="px-3 py-2.5 text-right tabular-nums">{formatCurrency(consolidadoTotais.valorBrutoNF)}</td>
+                          {taxaAdministrativaAtiva && <td className="px-3 py-2.5 text-right tabular-nums">{formatCurrency(consolidadoTotais.taxaAdm)}</td>}
+                          {taxaAdministrativaAtiva && <td className="px-3 py-2.5 text-right tabular-nums">{formatCurrency(consolidadoTotais.valorBrutoTotal)}</td>}
+                          <td className="px-3 py-2.5 text-right tabular-nums">{formatCurrency(consolidadoTotais.pisCofins)}</td>
+                          {hospitalSelecionado?.retem_iss && <td className="px-3 py-2.5 text-right tabular-nums">{formatCurrency(consolidadoTotais.iss)}</td>}
+                          <td className="px-3 py-2.5 text-right tabular-nums">{formatCurrency(consolidadoTotais.totalDescontos)}</td>
+                          <td className="px-3 py-2.5 text-right tabular-nums">{formatCurrency(consolidadoTotais.valorLiquido)}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  )}
+                  <p className="text-[10px] mt-6 text-center" style={{ color: MUTED_LIGHT }}>
+                    Documento gerado automaticamente pelo sistema CADES Financeiro — Confidencial
+                  </p>
+                </section>
+              </TabsContent>
+            )}
           </Tabs>
         )}
       </div>

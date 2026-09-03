@@ -1,8 +1,9 @@
 import ExcelJS from 'exceljs';
-import { profissaoLabel, tipoPlantaoLabel } from '@/lib/format';
+import { profissaoLabel } from '@/lib/format';
 
 interface LancRow {
   id: string; data_plantao: string; total_horas: number;
+  horario_inicio: string; horario_fim: string;
   profissao: string; tipo_plantao: string;
   valor_cobrado_cliente: number; valor_repasse_cooperado: number;
   cooperados: { id: string; nome: string } | null;
@@ -26,15 +27,26 @@ function fmtDiaMes(iso: string): string {
   return `${dd}/${mm}/${yyyy}`;
 }
 
-function fmtBRL(v: number): string {
-  return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v);
-}
+// Formato numérico usado em todas as células monetárias: número puro (sem "R$"), 2 casas decimais,
+// reconhecido pelo Excel como número (não texto) — o separador decimal/milhar é renderizado pelo
+// próprio Excel conforme a configuração regional de quem abre a planilha.
+const NUM_FMT_MOEDA = '#,##0.00';
 
-function cargaHoraria(tipo: string, horas: number): string {
-  const h = Math.round(horas);
-  if (tipo === 'normal') return `07:00h às 19:00h (${h}h)`;
-  if (tipo === 'extra')  return `19:00h às 07:00h (${h}h)`;
-  return tipoPlantaoLabel[tipo] ?? tipo;
+// Calcula a carga horária real a partir dos horários efetivamente registrados no plantão
+// (nunca a partir do tipo de plantão), sem arredondar minutos.
+function cargaHoraria(horarioInicio: string, horarioFim: string): string {
+  const fmtH = (t: string) => (t ?? '').slice(0, 5);
+  const [hi, mi] = (horarioInicio ?? '').split(':').map(Number);
+  const [hf, mf] = (horarioFim ?? '').split(':').map(Number);
+  if ([hi, mi, hf, mf].some(n => Number.isNaN(n))) {
+    return `${fmtH(horarioInicio)}h às ${fmtH(horarioFim)}h`;
+  }
+  let minutos = (hf * 60 + mf) - (hi * 60 + mi);
+  if (minutos <= 0) minutos += 24 * 60; // plantão cruzando a meia-noite
+  const h = Math.floor(minutos / 60);
+  const m = minutos % 60;
+  const duracao = m === 0 ? `${h}h` : `${h}h${String(m).padStart(2, '0')}min`;
+  return `${fmtH(horarioInicio)}h às ${fmtH(horarioFim)}h (${duracao})`;
 }
 
 // Aplica borda fina a uma célula
@@ -222,10 +234,10 @@ export async function exportarRelatorioExcel(
           const dr = ws.addRow([
             l.cooperados?.nome ?? '—',
             profissaoLabel[l.profissao] ?? l.profissao,
-            cargaHoraria(l.tipo_plantao, l.total_horas),
+            cargaHoraria(l.horario_inicio, l.horario_fim),
             1,
             fmtDiaMes(l.data_plantao),
-            fmtBRL(valor),
+            valor,
           ]);
           dr.height = 17;
 
@@ -237,15 +249,17 @@ export async function exportarRelatorioExcel(
               horizontal: colIdx === 1 || colIdx === 2 || colIdx === 3 ? 'left' : colIdx === 6 ? 'right' : 'center',
             };
             bordaFina(cell);
+            if (colIdx === 6) cell.numFmt = NUM_FMT_MOEDA;
           });
         });
 
         // TOTAL do cooperado
-        const tRow = ws.addRow(['', '', '', '', 'TOTAL', fmtBRL(sub)]);
+        const tRow = ws.addRow(['', '', '', '', 'TOTAL', sub]);
         tRow.height = 18;
         estiloNavy(tRow, 10);
         tRow.getCell(5).alignment = { vertical: 'middle', horizontal: 'right' };
         tRow.getCell(6).alignment = { vertical: 'middle', horizontal: 'right' };
+        tRow.getCell(6).numFmt = NUM_FMT_MOEDA;
       });
 
       totalGeral += totalSetor;
@@ -255,7 +269,7 @@ export async function exportarRelatorioExcel(
     // ── Total geral ───────────────────────────────────────────────────────────
     ws.addRow([]).height = 8;
 
-    const gtRow = ws.addRow(['', '', '', '', 'R$', fmtBRL(totalGeral)]);
+    const gtRow = ws.addRow(['', '', '', '', 'TOTAL GERAL', totalGeral]);
     gtRow.height = 24;
     (['E', 'F'] as const).forEach(col => {
       const cell = gtRow.getCell(col);
@@ -263,6 +277,7 @@ export async function exportarRelatorioExcel(
       cell.border = { top: { style: 'medium', color: { argb: BLACK } }, bottom: { style: 'medium', color: { argb: BLACK } }, left: { style: 'medium', color: { argb: BLACK } }, right: { style: 'medium', color: { argb: BLACK } } };
       cell.alignment = { vertical: 'middle', horizontal: 'right' };
     });
+    gtRow.getCell('F').numFmt = NUM_FMT_MOEDA;
   };
 
   if (hospitais.length === 1) {

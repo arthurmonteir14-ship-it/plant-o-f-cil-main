@@ -23,6 +23,7 @@ interface Sector { id: string; nome: string; hospital_id: string; }
 interface ValorRow {
   profissao: string; tipo_plantao: string; hospital_id: string | null;
   valor_hora_cliente: number; percentual_repasse: number; valor_hora_cooperado: number | null;
+  taxa_administrativa_cades: number | null;
 }
 
 const PALETTE = [
@@ -42,6 +43,18 @@ const HORARIOS: Record<'normal' | 'extra' | 'diarista', { inicio: string; fim: s
   diarista: { inicio: '07:00', fim: '19:00' },
 };
 
+function diasDoMesPorParidade(mes: Date, paridade: 'impar' | 'par'): Date[] {
+  const ano = mes.getFullYear();
+  const mesIndex = mes.getMonth();
+  const totalDias = new Date(ano, mesIndex + 1, 0).getDate();
+  const dias: Date[] = [];
+  for (let dia = 1; dia <= totalDias; dia++) {
+    const ehPar = dia % 2 === 0;
+    if ((paridade === 'par') === ehPar) dias.push(new Date(ano, mesIndex, dia));
+  }
+  return dias;
+}
+
 const schema = z.object({
   cooperado_id: z.string().uuid('Selecione um cooperado'),
   hospital_id: z.string().uuid('Selecione um hospital'),
@@ -60,6 +73,7 @@ export default function NovoLancamento() {
   const [valores, setValores] = useState<ValorRow[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [datasPlantao, setDatasPlantao] = useState<Date[]>([]);
+  const [mesCalendario, setMesCalendario] = useState<Date>(new Date());
 
   const [form, setForm] = useState<{
     cooperado_id: string; hospital_id: string; setor_id: string;
@@ -124,12 +138,20 @@ export default function NovoLancamento() {
   const percentual = valorHoraCliente > 0 ? (valorHoraCooperado / valorHoraCliente) * 100 : 0;
   const valorCliente = +(totalHoras * valorHoraCliente).toFixed(2);
   const valorCooperado = +(totalHoras * valorHoraCooperado).toFixed(2);
+  const taxaAdministrativaCades = valorAplicavel?.taxa_administrativa_cades ?? null;
 
   const datasLabel = datasPlantao.length === 0
     ? 'Selecione'
     : datasPlantao.length === 1
       ? format(datasPlantao[0], "dd 'de' MMMM 'de' yyyy", { locale: ptBR })
       : `${datasPlantao.length} dias selecionados`;
+
+  const selecionarDiasPorParidade = (paridade: 'impar' | 'par') => {
+    const novosDias = diasDoMesPorParidade(mesCalendario, paridade);
+    const novosTimes = new Set(novosDias.map(d => d.getTime()));
+    const mantidos = datasPlantao.filter(d => !novosTimes.has(d.getTime()));
+    setDatasPlantao([...mantidos, ...novosDias]);
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -192,6 +214,7 @@ export default function NovoLancamento() {
       valor_cobrado_cliente: valorCliente,
       percentual_repasse: percentual,
       valor_repasse_cooperado: valorCooperado,
+      taxa_administrativa_cades: taxaAdministrativaCades,
       observacao: form.observacao || null,
       lancado_por: null,
     }));
@@ -385,7 +408,18 @@ export default function NovoLancamento() {
                     </Button>
                   </PopoverTrigger>
                   <PopoverContent className="w-auto p-0" align="start">
+                    <div className="flex gap-2 px-3 pt-3">
+                      <Button type="button" variant="outline" size="sm" className="flex-1"
+                        onClick={() => selecionarDiasPorParidade('impar')}>
+                        Ímpares
+                      </Button>
+                      <Button type="button" variant="outline" size="sm" className="flex-1"
+                        onClick={() => selecionarDiasPorParidade('par')}>
+                        Pares
+                      </Button>
+                    </div>
                     <Calendar mode="multiple" selected={datasPlantao} onSelect={d => setDatasPlantao(d ?? [])}
+                      month={mesCalendario} onMonthChange={setMesCalendario}
                       initialFocus locale={ptBR} className="p-3 pointer-events-auto" />
                     {datasPlantao.length > 0 && (
                       <div className="border-t p-2">

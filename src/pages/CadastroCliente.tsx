@@ -13,7 +13,8 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
-import { Plus, Loader2, Pencil, PowerOff, Search, MapPin, Layers, Check, X } from 'lucide-react';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Plus, Loader2, Pencil, PowerOff, Search, MapPin, Layers, Check, X, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface Cliente {
@@ -25,6 +26,8 @@ interface Cliente {
   dia_vencimento: number | null; forma_pagamento: string | null;
   observacoes_financeiras: string | null;
   taxa_administrativa: number | null;
+  retem_iss: boolean;
+  gerar_relatorio_consolidado: boolean;
 }
 interface Setor { id: string; nome: string; ativo: boolean; hospital_id: string; }
 
@@ -58,6 +61,8 @@ const emptyForm = {
   responsavel: '', telefone: '', email: '',
   dia_vencimento: '', forma_pagamento: 'boleto', observacoes_financeiras: '',
   taxa_administrativa: '0',
+  retem_iss: false,
+  gerar_relatorio_consolidado: false,
 };
 
 export default function CadastroCliente() {
@@ -68,6 +73,8 @@ export default function CadastroCliente() {
   const [loadingCep, setLoadingCep] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [form, setForm] = useState({ ...emptyForm });
   const [search, setSearch] = useState('');
   const [filtroTipo, setFiltroTipo] = useState('__todos__');
@@ -162,6 +169,8 @@ export default function CadastroCliente() {
       forma_pagamento: r.forma_pagamento ?? 'boleto',
       observacoes_financeiras: r.observacoes_financeiras ?? '',
       taxa_administrativa: (r.taxa_administrativa ?? 0).toString().replace('.', ','),
+      retem_iss: r.retem_iss ?? false,
+      gerar_relatorio_consolidado: r.gerar_relatorio_consolidado ?? false,
     });
     setOpen(true);
   };
@@ -209,6 +218,8 @@ export default function CadastroCliente() {
       forma_pagamento: form.forma_pagamento || null,
       observacoes_financeiras: form.observacoes_financeiras.trim() || null,
       taxa_administrativa: taxaAdm,
+      retem_iss: form.retem_iss,
+      gerar_relatorio_consolidado: form.gerar_relatorio_consolidado,
     };
     const { error } = editId
       ? await supabase.from('hospitals').update(payload as never).eq('id', editId)
@@ -225,6 +236,23 @@ export default function CadastroCliente() {
     if (error) return toast.error(error.message);
     toast.success(ativo ? 'Cliente desativado' : 'Cliente reativado');
     setConfirmId(null);
+    load();
+  };
+
+  const excluir = async (id: string) => {
+    setDeleting(true);
+    const { error } = await supabase.from('hospitals').delete().eq('id', id);
+    setDeleting(false);
+    if (error) {
+      if (error.code === '23503') {
+        toast.error('Não é possível excluir: este cliente possui lançamentos de plantão vinculados. Desative-o em vez de excluir.');
+      } else {
+        toast.error(error.message);
+      }
+      return;
+    }
+    toast.success('Cliente excluído');
+    setDeleteId(null);
     load();
   };
 
@@ -331,6 +359,11 @@ export default function CadastroCliente() {
                               className={`h-7 text-xs gap-1 ${r.ativo ? 'text-destructive hover:text-destructive' : 'text-green-600 hover:text-green-700'}`}>
                               <PowerOff className="h-3.5 w-3.5" />
                               {r.ativo ? 'Desativar' : 'Reativar'}
+                            </Button>
+                            <Button size="sm" variant="ghost" onClick={() => setDeleteId(r.id)}
+                              className="h-7 text-xs gap-1 text-destructive hover:text-destructive">
+                              <Trash2 className="h-3.5 w-3.5" />
+                              Excluir
                             </Button>
                           </div>
                         </td>
@@ -613,6 +646,32 @@ export default function CadastroCliente() {
                   Percentual acrescido sobre o valor de cobrança apenas no relatório de faturamento.
                 </p>
               </div>
+              <div className="flex items-start gap-2 rounded-lg border p-3">
+                <Checkbox id="retem_iss" checked={form.retem_iss}
+                  onCheckedChange={v => f('retem_iss', v === true)} className="mt-0.5" />
+                <div>
+                  <Label htmlFor="retem_iss" className="cursor-pointer">Cliente retém ISS</Label>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Quando marcado, o cliente realiza a retenção do ISS na fonte. O Extrato Financeiro
+                    passará a calcular e apresentar os valores considerando essa retenção automaticamente.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-start gap-2 rounded-lg border p-3">
+                <Checkbox id="gerar_relatorio_consolidado" checked={form.gerar_relatorio_consolidado}
+                  onCheckedChange={v => f('gerar_relatorio_consolidado', v === true)} className="mt-0.5" />
+                <div>
+                  <Label htmlFor="gerar_relatorio_consolidado" className="cursor-pointer">Gerar relatório consolidado mensal</Label>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Uso exclusivo do financeiro. Quando marcado, a tela de Relatório de Faturamento passa a
+                    oferecer, para este cliente, um Relatório Consolidado Mensal: reúne todos os setores/unidades
+                    faturados no mês selecionado em um único demonstrativo, com valor bruto, descontos (ISS, PIS/COFINS,
+                    taxa administrativa) e valor líquido por setor, além dos totais gerais — útil para clientes com
+                    faturamento dividido por setor. Não altera lançamentos nem o faturamento, apenas consolida a
+                    apresentação dos dados já cadastrados.
+                  </p>
+                </div>
+              </div>
               <div>
                 <Label>Observações sobre faturamento</Label>
                 <Textarea value={form.observacoes_financeiras} onChange={e => f('observacoes_financeiras', e.target.value)}
@@ -649,6 +708,32 @@ export default function CadastroCliente() {
               const r = rows.find(x => x.id === confirmId);
               if (r) toggleAtivo(r.id, r.ativo);
             }}>Confirmar</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Confirmação de exclusão permanente */}
+      <AlertDialog open={!!deleteId} onOpenChange={o => !o && setDeleteId(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Excluir cliente</AlertDialogTitle>
+            <AlertDialogDescription>
+              {(() => {
+                const r = rows.find(x => x.id === deleteId);
+                return `Tem certeza que deseja excluir permanentemente "${r?.nome}"? Essa ação não pode ser desfeita e também apaga os setores e a tabela de valores cadastrados para este cliente. Se o cliente já tiver lançamentos de plantão, a exclusão será bloqueada — nesse caso, use "Desativar" em vez de excluir.`;
+              })()}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={deleting}
+              onClick={() => deleteId && excluir(deleteId)}
+            >
+              {deleting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Excluir definitivamente
+            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

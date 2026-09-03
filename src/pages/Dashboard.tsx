@@ -26,6 +26,7 @@ interface RecentRow {
 }
 interface RpcMensal    { ano_mes: string; faturamento: number; repasse: number; plantoes: number; }
 interface RpcCliente   { hospital_id: string; nome: string; faturamento: number; }
+interface RpcCotaParte { hospital_id: string; nome: string; cooperados: number; cota_parte: number; }
 interface RpcSetor     { setor_id: string; nome: string; faturamento: number; }
 interface RpcCategoria { ano_mes: string; enfermeiros: number; tecnicos: number; }
 interface Hospital { id: string; nome: string; }
@@ -58,6 +59,7 @@ export default function Dashboard() {
   const [dadosPorClienteRpc, setDadosPorClienteRpc] = useState<RpcCliente[]>([]);
   const [dadosPorSetorRpc,   setDadosPorSetorRpc]   = useState<RpcSetor[]>([]);
   const [dadosCategoriaRpc,  setDadosCategoriaRpc]  = useState<RpcCategoria[]>([]);
+  const [dadosCotaParteRpc,  setDadosCotaParteRpc]  = useState<RpcCotaParte[]>([]);
   const [hospitals, setHospitals] = useState<Hospital[]>([]);
   const [sectors, setSectors]     = useState<Sector[]>([]);
   const [loadingChart, setLoadingChart] = useState(true);
@@ -115,11 +117,12 @@ export default function Dashboard() {
       const hospId  = filtroHospital === '__todos__' ? null : filtroHospital;
       const setorId = filtroSetor   === '__todos__' ? null : filtroSetor;
 
-      const [{ data: mensal }, { data: porCliente }, { data: porSetor }, { data: categoria }, { data: hosp }, { data: sects }] = await Promise.all([
+      const [{ data: mensal }, { data: porCliente }, { data: porSetor }, { data: categoria }, { data: cotaParte }, { data: hosp }, { data: sects }] = await Promise.all([
         supabase.rpc('dashboard_mensal',               { p_inicio: inicio, p_fim: fim, p_hospital_id: hospId, p_setor_id: setorId }),
         supabase.rpc('dashboard_por_cliente',          { p_inicio: inicio, p_fim: fim, p_setor_id: setorId }),
         supabase.rpc('dashboard_por_setor',            { p_inicio: inicio, p_fim: fim, p_hospital_id: hospId }),
         supabase.rpc('dashboard_plantoes_por_categoria', { p_inicio: inicio, p_fim: fim, p_hospital_id: hospId, p_setor_id: setorId }),
+        supabase.rpc('dashboard_cota_parte_por_cliente', { p_inicio: inicio, p_fim: fim, p_setor_id: setorId }),
         supabase.from('hospitals').select('id, nome').order('nome'),
         supabase.from('sectors').select('id, nome, hospital_id').eq('ativo', true).order('nome'),
       ]);
@@ -128,6 +131,7 @@ export default function Dashboard() {
       setDadosPorClienteRpc(porCliente ?? []);
       setDadosPorSetorRpc(porSetor ?? []);
       setDadosCategoriaRpc((categoria ?? []) as RpcCategoria[]);
+      setDadosCotaParteRpc(((cotaParte ?? []) as RpcCotaParte[]).filter(r => hospId ? r.hospital_id === hospId : true));
       setHospitals(hosp ?? []);
       setSectors((sects ?? []) as Sector[]);
       setLoadingChart(false);
@@ -182,6 +186,20 @@ export default function Dashboard() {
   const dadosPorSetor = useMemo(() =>
     dadosPorSetorRpc.map(r => ({ nome: r.nome, valor: Number(r.faturamento) })),
   [dadosPorSetorRpc]);
+
+  // ── Relatório de Faturamento do período selecionado ───────────────────────
+  const totalFaturadoPeriodo = useMemo(
+    () => dadosMensaisRpc.reduce((s, r) => s + Number(r.faturamento), 0),
+    [dadosMensaisRpc]
+  );
+  const totalRepassadoPeriodo = useMemo(
+    () => dadosMensaisRpc.reduce((s, r) => s + Number(r.repasse), 0),
+    [dadosMensaisRpc]
+  );
+  const totalCotaPartePeriodo = useMemo(
+    () => dadosCotaParteRpc.reduce((s, r) => s + Number(r.cota_parte), 0),
+    [dadosCotaParteRpc]
+  );
 
   // ── Gráfico 5: Plantões por categoria (Enfermeiro vs Técnico) ──────────────
   const dadosCategoria = useMemo(() => {
@@ -251,6 +269,82 @@ export default function Dashboard() {
               </Card>
             ))}
           </div>
+
+          {/* ── RELATÓRIO DE FATURAMENTO ── */}
+          <Card className="shadow-card">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-lg font-bold flex items-center justify-between">
+                <span>Relatório de Faturamento</span>
+                <span className="text-xs font-normal text-muted-foreground">
+                  {periodoInicio === periodoFim
+                    ? `${MESES[Number(periodoInicio.split('-')[1]) - 1]}/${periodoInicio.split('-')[0]}`
+                    : `${periodoInicio} a ${periodoFim}`}
+                </span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-5">
+              {loadingChart ? (
+                <p className="text-sm text-muted-foreground text-center py-6">Carregando…</p>
+              ) : (
+                <>
+                  {/* Faturado x Repassado, lado a lado */}
+                  <div className="grid gap-4 sm:grid-cols-3">
+                    <div className="rounded-xl bg-primary-soft p-4">
+                      <p className="text-xs uppercase tracking-wider text-muted-foreground">Valor Total Faturado</p>
+                      <p className="text-2xl font-bold tabular-nums text-primary mt-1">{formatCurrency(totalFaturadoPeriodo)}</p>
+                    </div>
+                    <div className="rounded-xl bg-success/10 p-4">
+                      <p className="text-xs uppercase tracking-wider text-muted-foreground">Valor Repassado aos Cooperados</p>
+                      <p className="text-2xl font-bold tabular-nums text-success mt-1">{formatCurrency(totalRepassadoPeriodo)}</p>
+                    </div>
+                    <div className="rounded-xl bg-accent-soft p-4">
+                      <p className="text-xs uppercase tracking-wider text-muted-foreground">Arrecadação de Cota Parte</p>
+                      <p className="text-2xl font-bold tabular-nums text-accent mt-1">{formatCurrency(totalCotaPartePeriodo)}</p>
+                    </div>
+                  </div>
+
+                  {/* Cota parte por projeto/cliente */}
+                  <div>
+                    <p className="text-sm font-semibold mb-2">Cota Parte por Projeto (Cliente)</p>
+                    {dadosCotaParteRpc.length === 0 ? (
+                      <p className="text-sm text-muted-foreground py-4">Sem dados no período.</p>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead className="text-xs uppercase tracking-wider text-muted-foreground border-b">
+                            <tr>
+                              <th className="text-left py-2 font-medium">Projeto / Cliente</th>
+                              <th className="text-right py-2 font-medium">Cooperados</th>
+                              <th className="text-right py-2 font-medium">Cota Parte</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y">
+                            {dadosCotaParteRpc.map(r => (
+                              <tr key={r.hospital_id} className="hover:bg-muted/40">
+                                <td className="py-2">{r.nome}</td>
+                                <td className="py-2 text-right tabular-nums">{r.cooperados}</td>
+                                <td className="py-2 text-right tabular-nums font-medium">{formatCurrency(Number(r.cota_parte))}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                          <tfoot>
+                            <tr className="border-t font-bold">
+                              <td className="py-2">Total</td>
+                              <td></td>
+                              <td className="py-2 text-right tabular-nums">{formatCurrency(totalCotaPartePeriodo)}</td>
+                            </tr>
+                          </tfoot>
+                        </table>
+                      </div>
+                    )}
+                    <p className="text-xs text-muted-foreground mt-2">
+                      Cota parte estimada em R$80 por cooperado distinto que atendeu o cliente no período (não é cobrada do cliente, é retida do repasse do cooperado). Se um cooperado atendeu mais de um cliente no mesmo período, ele é contado em cada um.
+                    </p>
+                  </div>
+                </>
+              )}
+            </CardContent>
+          </Card>
 
           {/* ── SEÇÃO DE GRÁFICOS ── */}
           <div>

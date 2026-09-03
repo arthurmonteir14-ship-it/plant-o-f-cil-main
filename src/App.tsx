@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { ThemeProvider } from "next-themes";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -21,41 +22,43 @@ import Auth from "./pages/Auth";
 const queryClient = new QueryClient();
 
 const App = () => (
-  <QueryClientProvider client={queryClient}>
-    <TooltipProvider>
-      <Toaster />
-      <Sonner />
-      <BrowserRouter>
-        <AuthProvider>
-          <Routes>
-            <Route path="/auth" element={<Auth />} />
-            <Route path="/" element={<ProtectedRoute><AppLayout><Dashboard /></AppLayout></ProtectedRoute>} />
-            <Route path="/cadastros/cooperados" element={<ProtectedRoute><AppLayout><CadastroCooperado /></AppLayout></ProtectedRoute>} />
-            <Route path="/cadastros/clientes" element={<ProtectedRoute><AppLayout><CadastroCliente /></AppLayout></ProtectedRoute>} />
-            <Route path="/financeiro/lancamentos" element={
-              <ProtectedRoute requireFinanceiro><AppLayout><Lancamentos /></AppLayout></ProtectedRoute>
-            } />
-            <Route path="/financeiro/lancamentos/novo" element={
-              <ProtectedRoute requireFinanceiro><AppLayout><NovoLancamento /></AppLayout></ProtectedRoute>
-            } />
-            <Route path="/financeiro/tabela-valores" element={
-              <ProtectedRoute requireFinanceiro><AppLayout><TabelaValores /></AppLayout></ProtectedRoute>
-            } />
-            <Route path="/financeiro/relatorios" element={
-              <ProtectedRoute requireFinanceiro><AppLayout><Relatorios /></AppLayout></ProtectedRoute>
-            } />
-            <Route path="/financeiro/fechamento" element={
-              <ProtectedRoute requireFinanceiro><AppLayout><Fechamento /></AppLayout></ProtectedRoute>
-            } />
-            <Route path="/relatorio-faturamento" element={
-              <ProtectedRoute requireFinanceiro><RelatorioFaturamento /></ProtectedRoute>
-            } />
-            <Route path="*" element={<NotFound />} />
-          </Routes>
-        </AuthProvider>
-      </BrowserRouter>
-    </TooltipProvider>
-  </QueryClientProvider>
+  <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false} storageKey="cades-theme">
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
+        <Toaster />
+        <Sonner />
+        <BrowserRouter>
+          <AuthProvider>
+              <Routes>
+                <Route path="/auth" element={<Auth />} />
+                <Route path="/" element={<ProtectedRoute><AppLayout><Dashboard /></AppLayout></ProtectedRoute>} />
+                <Route path="/cadastros/cooperados" element={<ProtectedRoute><AppLayout><CadastroCooperado /></AppLayout></ProtectedRoute>} />
+                <Route path="/cadastros/clientes" element={<ProtectedRoute><AppLayout><CadastroCliente /></AppLayout></ProtectedRoute>} />
+                <Route path="/financeiro/lancamentos" element={
+                  <ProtectedRoute requireFinanceiro><AppLayout><Lancamentos /></AppLayout></ProtectedRoute>
+                } />
+                <Route path="/financeiro/lancamentos/novo" element={
+                  <ProtectedRoute requireFinanceiro><AppLayout><NovoLancamento /></AppLayout></ProtectedRoute>
+                } />
+                <Route path="/financeiro/tabela-valores" element={
+                  <ProtectedRoute requireFinanceiro><AppLayout><TabelaValores /></AppLayout></ProtectedRoute>
+                } />
+                <Route path="/financeiro/relatorios" element={
+                  <ProtectedRoute requireFinanceiro><AppLayout><Relatorios /></AppLayout></ProtectedRoute>
+                } />
+                <Route path="/financeiro/fechamento" element={
+                  <ProtectedRoute requireFinanceiro><AppLayout><Fechamento /></AppLayout></ProtectedRoute>
+                } />
+                <Route path="/relatorio-faturamento" element={
+                  <ProtectedRoute requireFinanceiro><RelatorioFaturamento /></ProtectedRoute>
+                } />
+                <Route path="*" element={<NotFound />} />
+              </Routes>
+            </AuthProvider>
+          </BrowserRouter>
+        </TooltipProvider>
+      </QueryClientProvider>
+    </ThemeProvider>
 );
 
 export default App;
