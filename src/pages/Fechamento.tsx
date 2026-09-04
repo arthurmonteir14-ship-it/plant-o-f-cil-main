@@ -8,6 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   Download, FileText, Eye, Send, CheckCircle, AlertCircle, Clock, RefreshCw, SendHorizonal, X, Receipt, Lock, Unlock, Plus, Shirt,
 } from 'lucide-react';
@@ -31,7 +32,7 @@ interface LancRow {
   hospitals: { id: string; nome: string } | null;
   sectors: { id: string; nome: string } | null;
 }
-interface Hospital { id: string; nome: string; }
+interface Hospital { id: string; nome: string; taxa_administrativa: number; }
 interface Sector { id: string; nome: string; hospital_id: string; }
 interface Cooperado {
   id: string;
@@ -116,11 +117,14 @@ function formatarCPF(cpf: string | null | undefined): string {
 
 // ─── PDF Fechamento (existente) ───────────────────────────────────────────────
 
-function gerarPDFFechamento(rows: LancRow[], periodoLabel: string, aba: 'cobranca' | 'repasse', grupoNome: string) {
+function gerarPDFFechamento(rows: LancRow[], periodoLabel: string, aba: 'cobranca' | 'repasse', grupoNome: string, hospitals: Hospital[] = [], mostrarTaxaAdm = false) {
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
   const W = doc.internal.pageSize.getWidth();
   const titulo = aba === 'cobranca' ? 'Cobrança ao Cliente' : 'Repasse ao Cooperado';
   const valorKey = aba === 'cobranca' ? 'valor_cobrado_cliente' : 'valor_repasse_cooperado';
+  const taxaPorHospital = new Map(hospitals.map(h => [h.id, Number(h.taxa_administrativa) || 0]));
+  const incluirTaxaAdm = aba === 'cobranca' && mostrarTaxaAdm;
+  const taxaDaRow = (r: LancRow) => Number(r.valor_cobrado_cliente) * (taxaPorHospital.get(r.hospitals?.id ?? '') ?? 0) / 100;
 
   doc.setFillColor(31, 41, 99);
   doc.rect(0, 0, W, 26, 'F');
@@ -134,12 +138,25 @@ function gerarPDFFechamento(rows: LancRow[], periodoLabel: string, aba: 'cobranc
 
   const totalHoras = rows.reduce((s, r) => s + Number(r.total_horas), 0);
   const totalValor = rows.reduce((s, r) => s + Number(r[valorKey as keyof LancRow] as number), 0);
+  const totalTaxaAdm = incluirTaxaAdm ? rows.reduce((s, r) => s + taxaDaRow(r), 0) : 0;
+  const taxasDistintas = incluirTaxaAdm
+    ? [...new Set(rows.map(r => taxaPorHospital.get(r.hospitals?.id ?? '') ?? 0))]
+    : [];
+  const taxaLabelSufixo = taxasDistintas.length === 1 ? ` (${taxasDistintas[0].toFixed(2)}%)` : taxasDistintas.length > 1 ? ' (várias taxas)' : '';
 
-  const kpis = [
-    { label: 'Plantões', value: String(rows.length) },
-    { label: 'Total horas', value: `${totalHoras.toFixed(1)}h` },
-    { label: aba === 'cobranca' ? 'Total a cobrar' : 'Total a repassar', value: fmt(totalValor) },
-  ];
+  const kpis = aba === 'cobranca'
+    ? [
+        { label: 'Plantões', value: String(rows.length) },
+        { label: 'Total horas', value: `${totalHoras.toFixed(1)}h` },
+        { label: 'Total da produção', value: fmt(totalValor) },
+        ...(incluirTaxaAdm ? [{ label: `Taxa administrativa${taxaLabelSufixo}`, value: fmt(totalTaxaAdm) }] : []),
+        { label: 'Total a cobrar', value: fmt(totalValor + totalTaxaAdm) },
+      ]
+    : [
+        { label: 'Plantões', value: String(rows.length) },
+        { label: 'Total horas', value: `${totalHoras.toFixed(1)}h` },
+        { label: 'Total a repassar', value: fmt(totalValor) },
+      ];
   const kpiW = (W - 28) / kpis.length;
   kpis.forEach((k, i) => {
     const x = 14 + i * kpiW;
@@ -1500,6 +1517,7 @@ function AbaCobranca({ rows, hospitals, sectors, cooperados, periodoLabel, compe
   const [filterHospital, setFilterHospital] = useState('all');
   const [filterCooperado, setFilterCooperado] = useState('all');
   const [filterSetor, setFilterSetor] = useState('all');
+  const [mostrarTaxaPdf, setMostrarTaxaPdf] = useState(false);
   const setoresFiltrados = filterHospital === 'all' ? sectors : sectors.filter(s => s.hospital_id === filterHospital);
   const filtered = useMemo(() => rows.filter(r => {
     if (filterHospital !== 'all' && r.hospitals?.id !== filterHospital) return false;
@@ -1533,15 +1551,36 @@ function AbaCobranca({ rows, hospitals, sectors, cooperados, periodoLabel, compe
             <SelectContent><SelectItem value="all">Todos os setores</SelectItem>{setoresFiltrados.map(s => <SelectItem key={s.id} value={s.id}>{s.nome}</SelectItem>)}</SelectContent>
           </Select></div>
       </CardContent></Card>
-      <div className="grid grid-cols-3 gap-3">
-        {[{ label: 'Plantões', value: filtered.length }, { label: 'Total horas', value: `${filtered.reduce((s, r) => s + Number(r.total_horas), 0).toFixed(1)}h` }, { label: 'Total a cobrar', value: formatCurrency(filtered.reduce((s, r) => s + Number(r.valor_cobrado_cliente), 0)) }].map(c => (
+      <div className={`grid gap-3 ${mostrarTaxaPdf ? 'sm:grid-cols-5' : 'grid-cols-3'}`}>
+        {(() => {
+          const totalProducao = filtered.reduce((s, r) => s + Number(r.valor_cobrado_cliente), 0);
+          const taxaDoHospital = (r: LancRow) => hospitals.find(h => h.id === r.hospitals?.id)?.taxa_administrativa ?? 0;
+          const totalTaxa = mostrarTaxaPdf
+            ? filtered.reduce((s, r) => s + Number(r.valor_cobrado_cliente) * (taxaDoHospital(r) / 100), 0)
+            : 0;
+          const taxasDistintas = mostrarTaxaPdf ? [...new Set(filtered.map(taxaDoHospital))] : [];
+          const sufixo = taxasDistintas.length === 1 ? ` (${taxasDistintas[0].toFixed(2)}%)` : taxasDistintas.length > 1 ? ' (várias taxas)' : '';
+          return [
+            { label: 'Plantões', value: String(filtered.length) },
+            { label: 'Total horas', value: `${filtered.reduce((s, r) => s + Number(r.total_horas), 0).toFixed(1)}h` },
+            { label: 'Total da produção', value: formatCurrency(totalProducao) },
+            ...(mostrarTaxaPdf ? [{ label: `Taxa administrativa${sufixo}`, value: formatCurrency(totalTaxa) }] : []),
+            { label: 'Total a cobrar', value: formatCurrency(totalProducao + totalTaxa) },
+          ];
+        })().map(c => (
           <Card key={c.label}><CardContent className="p-4"><p className="text-xs uppercase tracking-wider text-muted-foreground">{c.label}</p><p className="text-lg font-bold tabular-nums mt-0.5">{c.value}</p></CardContent></Card>
         ))}
       </div>
-      {filtered.length > 0 && <div className="flex gap-2 justify-end">
-        <Button variant="outline" size="sm" className="gap-2" onClick={() => gerarPDFFechamento(filtered, periodoLabel, 'cobranca', grupoNome)}><FileText className="h-4 w-4" /> PDF</Button>
-        <Button variant="outline" size="sm" className="gap-2" onClick={() => exportarRelatorioExcel(filtered as any, 'cobranca', periodoLabel, grupoNome, filterCooperado !== 'all' ? filterCooperado : undefined)}><Download className="h-4 w-4" /> Excel</Button>
-        <Button variant="outline" size="sm" className="gap-2" onClick={() => exportCSV(filtered, 'cobranca', periodoLabel)}><Download className="h-4 w-4" /> CSV</Button>
+      {filtered.length > 0 && <div className="flex items-center gap-4 justify-end">
+        <label className="flex items-center gap-2 text-sm text-muted-foreground cursor-pointer select-none">
+          <Checkbox checked={mostrarTaxaPdf} onCheckedChange={v => setMostrarTaxaPdf(!!v)} />
+          Incluir taxa administrativa no PDF
+        </label>
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" className="gap-2" onClick={() => gerarPDFFechamento(filtered, periodoLabel, 'cobranca', grupoNome, hospitals, mostrarTaxaPdf)}><FileText className="h-4 w-4" /> PDF</Button>
+          <Button variant="outline" size="sm" className="gap-2" onClick={() => exportarRelatorioExcel(filtered as any, 'cobranca', periodoLabel, grupoNome, filterCooperado !== 'all' ? filterCooperado : undefined)}><Download className="h-4 w-4" /> Excel</Button>
+          <Button variant="outline" size="sm" className="gap-2" onClick={() => exportCSV(filtered, 'cobranca', periodoLabel)}><Download className="h-4 w-4" /> CSV</Button>
+        </div>
       </div>}
       {filtered.length === 0 ? <Card><CardContent className="p-10 text-center text-sm text-muted-foreground">Nenhum lançamento para os filtros selecionados.</CardContent></Card>
         : <TabelaGrupos grupos={grupos} valorKey="valor_cobrado_cliente" grupoLabel={filterHospital !== 'all' ? 'Cooperado' : 'Hospital'} subGrupoLabel={r => filterHospital !== 'all' ? (r.cooperados?.nome ?? '—') : (r.hospitals?.nome ?? '—')} competenciasFechadas={competenciasFechadas} />}
@@ -1793,7 +1832,7 @@ export default function Fechamento() {
   useEffect(() => { load(periodoCalc.inicio, periodoCalc.fim); }, [periodoCalc.inicio, periodoCalc.fim]);
 
   useEffect(() => {
-    supabase.from('hospitals').select('id, nome').order('nome').then(({ data }) => setHospitals(data ?? []));
+    supabase.from('hospitals').select('id, nome, taxa_administrativa').order('nome').then(({ data }) => setHospitals((data ?? []) as Hospital[]));
     supabase.from('sectors').select('id, nome, hospital_id').eq('ativo', true).order('nome').then(({ data }) => setSectors(data ?? []));
     supabase.from('cooperados').select('id, nome, cpf, email, profissao, rg, pis_inss, pix').order('nome')
       .then(({ data }) => setCooperados((data ?? []) as Cooperado[]));
