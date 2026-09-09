@@ -14,7 +14,7 @@ import { CalendarIcon, Loader2, ArrowLeft, Building2, LayoutGrid } from 'lucide-
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { cn } from '@/lib/utils';
-import { calcularHoras, formatCurrency, profissaoLabel, tipoPlantaoOptions } from '@/lib/format';
+import { calcularHoras, formatCurrency, profissaoLabel, tipoPlantaoOptions, TIPOS_VALOR_INTEGRAL } from '@/lib/format';
 import { toast } from 'sonner';
 
 interface Cooperado { id: string; nome: string; profissao: string; }
@@ -37,10 +37,11 @@ const PALETTE = [
   { bg: '#f5f2ee', text: '#5c4a2d', dot: '#b0926a', border: '#d5bfa0' },
 ];
 
-const HORARIOS: Record<'normal' | 'extra' | 'diarista', { inicio: string; fim: string }> = {
+const HORARIOS: Record<'normal' | 'extra' | 'diarista' | 'visita', { inicio: string; fim: string }> = {
   normal: { inicio: '07:00', fim: '19:00' },
   extra: { inicio: '19:00', fim: '07:00' },
   diarista: { inicio: '07:00', fim: '19:00' },
+  visita: { inicio: '08:00', fim: '09:00' },
 };
 
 function diasDoMesPorParidade(mes: Date, paridade: 'impar' | 'par'): Date[] {
@@ -61,7 +62,7 @@ const schema = z.object({
   setor_id: z.string().uuid('Selecione um setor'),
   horario_inicio: z.string().regex(/^\d{2}:\d{2}$/, 'Horário inválido'),
   horario_fim: z.string().regex(/^\d{2}:\d{2}$/, 'Horário inválido'),
-  tipo_plantao: z.enum(['normal', 'extra', 'diarista']),
+  tipo_plantao: z.enum(['normal', 'extra', 'diarista', 'visita']),
   observacao: z.string().max(500).optional(),
 });
 
@@ -78,7 +79,7 @@ export default function NovoLancamento() {
   const [form, setForm] = useState<{
     cooperado_id: string; hospital_id: string; setor_id: string;
     horario_inicio: string; horario_fim: string;
-    tipo_plantao: 'normal' | 'extra' | 'diarista'; observacao: string;
+    tipo_plantao: 'normal' | 'extra' | 'diarista' | 'visita'; observacao: string;
   }>({
     cooperado_id: '', hospital_id: '', setor_id: '',
     ...HORARIOS.normal, tipo_plantao: 'normal', observacao: '',
@@ -100,7 +101,7 @@ export default function NovoLancamento() {
     })();
   }, []);
 
-  const setTipoPlantao = (tipo: 'normal' | 'extra' | 'diarista') =>
+  const setTipoPlantao = (tipo: 'normal' | 'extra' | 'diarista' | 'visita') =>
     setForm(f => ({ ...f, tipo_plantao: tipo, ...HORARIOS[tipo] }));
 
   const cooperadoSelecionado = cooperados.find(c => c.id === form.cooperado_id);
@@ -136,8 +137,9 @@ export default function NovoLancamento() {
         : +(valorHoraCliente * Number(valorAplicavel.percentual_repasse) / 100).toFixed(2))
     : 0;
   const percentual = valorHoraCliente > 0 ? (valorHoraCooperado / valorHoraCliente) * 100 : 0;
-  const valorCliente = +(totalHoras * valorHoraCliente).toFixed(2);
-  const valorCooperado = +(totalHoras * valorHoraCooperado).toFixed(2);
+  const valorIntegral = TIPOS_VALOR_INTEGRAL.has(form.tipo_plantao);
+  const valorCliente = valorIntegral ? valorHoraCliente : +(totalHoras * valorHoraCliente).toFixed(2);
+  const valorCooperado = valorIntegral ? valorHoraCooperado : +(totalHoras * valorHoraCooperado).toFixed(2);
   const taxaAdministrativaCades = valorAplicavel?.taxa_administrativa_cades ?? null;
 
   const datasLabel = datasPlantao.length === 0

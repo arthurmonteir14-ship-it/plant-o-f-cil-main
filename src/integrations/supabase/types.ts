@@ -334,7 +334,7 @@ export type Database = {
         | "cac"
         | "assistente_sala"
       status_lancamento_enum: "lancado" | "aprovado" | "faturado" | "pago"
-      tipo_plantao_enum: "normal" | "extra" | "sobreaviso" | "diarista"
+      tipo_plantao_enum: "normal" | "extra" | "sobreaviso" | "diarista" | "visita"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -470,7 +470,7 @@ export const Constants = {
         "assistente_social",
       ],
       status_lancamento_enum: ["lancado", "aprovado", "faturado", "pago"],
-      tipo_plantao_enum: ["normal", "extra", "sobreaviso", "diarista"],
+      tipo_plantao_enum: ["normal", "extra", "sobreaviso", "diarista", "visita"],
     },
   },
 } as const

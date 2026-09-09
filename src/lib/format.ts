@@ -33,13 +33,18 @@ export const tipoPlantaoLabel: Record<string, string> = {
   extra: 'Noturno',
   sobreaviso: 'Sobreaviso',
   diarista: 'Diarista',
+  visita: 'Visita',
 };
 
-export const tipoPlantaoOptions: { value: 'normal' | 'extra' | 'diarista'; label: string }[] = [
+export const tipoPlantaoOptions: { value: 'normal' | 'extra' | 'diarista' | 'visita'; label: string }[] = [
   { value: 'normal', label: 'Diurno' },
   { value: 'extra', label: 'Noturno' },
   { value: 'diarista', label: 'Diarista' },
+  { value: 'visita', label: 'Visita' },
 ];
+
+/** Tipos de plantão cujo valor é integral (não calculado por hora) — ex: Visita. */
+export const TIPOS_VALOR_INTEGRAL = new Set(['visita']);
 
 export const statusLabel: Record<string, string> = {
   lancado: 'Lançado',

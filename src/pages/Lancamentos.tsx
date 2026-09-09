@@ -49,6 +49,7 @@ const TIPO_IMPORT: Record<string, string> = {
   diurno: 'normal', normal: 'normal',
   noturno: 'extra', extra: 'extra',
   diarista: 'diarista', sobreaviso: 'sobreaviso',
+  visita: 'visita',
 };
 
 function normStr(s: string) {
@@ -362,13 +363,17 @@ export default function Lancamentos() {
         .limit(1)
         .maybeSingle();
       if (tv) {
-        valor_cobrado_cliente = Number(tv.valor_hora_cliente) * total_horas;
+        // Visita: valor da tabela é integral (não multiplica pelas horas do plantão)
+        valor_cobrado_cliente = tipo_plantao === 'visita' ? Number(tv.valor_hora_cliente) : Number(tv.valor_hora_cliente) * total_horas;
         percentual_repasse = Number(tv.percentual_repasse);
         valor_repasse_cooperado = valor_cobrado_cliente * (percentual_repasse / 100);
       }
-    } else {
+    } else if (tipo_plantao !== 'visita') {
       valor_cobrado_cliente = (valor_cobrado_cliente / Number(editTarget.total_horas)) * total_horas;
       valor_repasse_cooperado = (valor_repasse_cooperado / Number(editTarget.total_horas)) * total_horas;
+      percentual_repasse = Number(editTarget.valor_repasse_cooperado) / Number(editTarget.valor_cobrado_cliente) * 100;
+    } else {
+      // Visita sem troca de cliente/tipo: valor integral permanece o mesmo, só recalcula o %
       percentual_repasse = Number(editTarget.valor_repasse_cooperado) / Number(editTarget.valor_cobrado_cliente) * 100;
     }
 
@@ -495,10 +500,11 @@ export default function Lancamentos() {
           .limit(1)
           .maybeSingle();
         if (!tv) { erros.push({ label, erro: 'Sem tabela de valores para o cliente/tipo escolhido' }); continue; }
-        valor_cobrado_cliente = Number(tv.valor_hora_cliente) * total_horas;
+        // Visita: valor da tabela é integral (não multiplica pelas horas do plantão)
+        valor_cobrado_cliente = tipo_plantao === 'visita' ? Number(tv.valor_hora_cliente) : Number(tv.valor_hora_cliente) * total_horas;
         percentual_repasse = Number(tv.percentual_repasse);
         valor_repasse_cooperado = valor_cobrado_cliente * (percentual_repasse / 100);
-      } else if (total_horas !== Number(r.total_horas)) {
+      } else if (tipo_plantao !== 'visita' && total_horas !== Number(r.total_horas)) {
         valor_cobrado_cliente = (valor_cobrado_cliente / Number(r.total_horas)) * total_horas;
         valor_repasse_cooperado = (valor_repasse_cooperado / Number(r.total_horas)) * total_horas;
       }
@@ -635,17 +641,19 @@ export default function Lancamentos() {
     });
 
     const calcVals = (hospitalId: string, coopProfissao: string | undefined, tipo: string | undefined, horas: number | undefined, erros: string[], label: string) => {
-      if (!hospitalId || !coopProfissao || !tipo || !horas) return {};
+      const isVisita = tipo === 'visita';
+      if (!hospitalId || !coopProfissao || !tipo || (!isVisita && !horas)) return {};
       const candidatos = tv.filter((t: any) => t.profissao === coopProfissao && t.tipo_plantao === tipo);
       const t = candidatos.find((t: any) => t.hospital_id === hospitalId) ?? candidatos.find((t: any) => t.hospital_id === null);
       if (!t) { erros.push(`Sem tabela de valores: ${hospitals.find(h => h.id === hospitalId)?.nome ?? ''} / ${label}`); return {}; }
+      const horasCalc = isVisita ? 1 : (horas ?? 0);
       const valor_hora_cliente    = Number(t.valor_hora_cliente);
-      const valor_cobrado_cliente = Math.round(valor_hora_cliente * horas * 100) / 100;
+      const valor_cobrado_cliente = isVisita ? valor_hora_cliente : Math.round(valor_hora_cliente * horasCalc * 100) / 100;
       const valorHoraCooperado    = t.valor_hora_cooperado != null
         ? Number(t.valor_hora_cooperado)
         : +(valor_hora_cliente * Number(t.percentual_repasse) / 100).toFixed(2);
       const percentual_repasse      = valor_hora_cliente > 0 ? (valorHoraCooperado / valor_hora_cliente) * 100 : Number(t.percentual_repasse);
-      const valor_repasse_cooperado = Math.round(horas * valorHoraCooperado * 100) / 100;
+      const valor_repasse_cooperado = isVisita ? valorHoraCooperado : Math.round(horasCalc * valorHoraCooperado * 100) / 100;
       const taxa_administrativa_cades = t.taxa_administrativa_cades != null ? Number(t.taxa_administrativa_cades) : null;
       return { valor_hora_cliente, valor_cobrado_cliente, valor_repasse_cooperado, percentual_repasse, taxa_administrativa_cades };
     };
@@ -676,10 +684,10 @@ export default function Lancamentos() {
 
       // Tipo determina os horários padronizados
       const tipo_plantao = TIPO_IMPORT[normStr(String(tipo_raw))];
-      if (!tipo_plantao) erros.push(`Tipo inválido: "${tipo_raw}". Use Diurno, Noturno ou Diarista`);
+      if (!tipo_plantao) erros.push(`Tipo inválido: "${tipo_raw}". Use Diurno, Noturno, Diarista ou Visita`);
 
-      const horario_inicio = tipo_plantao === 'normal' ? '07:00' : tipo_plantao === 'extra' ? '19:00' : tipo_plantao === 'diarista' ? '07:00' : undefined;
-      const horario_fim    = tipo_plantao === 'normal' ? '19:00' : tipo_plantao === 'extra' ? '07:00' : tipo_plantao === 'diarista' ? '19:00' : undefined;
+      const horario_inicio = tipo_plantao === 'normal' ? '07:00' : tipo_plantao === 'extra' ? '19:00' : tipo_plantao === 'diarista' ? '07:00' : tipo_plantao === 'visita' ? '08:00' : undefined;
+      const horario_fim    = tipo_plantao === 'normal' ? '19:00' : tipo_plantao === 'extra' ? '07:00' : tipo_plantao === 'diarista' ? '19:00' : tipo_plantao === 'visita' ? '09:00' : undefined;
 
       // Profissão do lançamento vem sempre do cadastro do cooperado (agora texto livre, sem lista fixa);
       // o profMap só serve de fallback/validação quando o cooperado não foi encontrado na planilha.
@@ -689,7 +697,7 @@ export default function Lancamentos() {
 
       const total_horas = horario_inicio && horario_fim ? calcularHoras(horario_inicio, horario_fim) : undefined;
 
-      const tipoLabel = tipo_plantao === 'normal' ? 'Diurno' : tipo_plantao === 'extra' ? 'Noturno' : tipo_plantao === 'diarista' ? 'Diarista' : (tipo_plantao ?? String(tipo_raw));
+      const tipoLabel = tipo_plantao === 'normal' ? 'Diurno' : tipo_plantao === 'extra' ? 'Noturno' : tipo_plantao === 'diarista' ? 'Diarista' : tipo_plantao === 'visita' ? 'Visita' : (tipo_plantao ?? String(tipo_raw));
       if (tipo_plantao === 'diarista') avisos.push('Plantão Diarista — verifique se o valor está correto antes de importar');
       const vals = calcVals(hospital?.id ?? '', coopProfissao, tipo_plantao, total_horas, erros, `${coopProfissao ?? prof_raw} / ${tipoLabel}`);
 

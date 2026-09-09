@@ -114,17 +114,18 @@ export default function TabelaValores() {
     });
   }, [rowsFiltradas, hospitals]);
 
+  const isVisita    = form.tipo_plantao === 'visita';
   const clienteHora = parseFloat(form.valor_hora_cliente.replace(',', '.'));
   const coopHora    = parseFloat(form.valor_hora_cooperado.replace(',', '.'));
-  const horasNum    = parseFloat(form.horas.replace(',', '.'));
+  const horasNum    = isVisita ? 1 : parseFloat(form.horas.replace(',', '.'));
   const coopMaior   = !isNaN(clienteHora) && !isNaN(coopHora) && coopHora > clienteHora;
 
   const salvar = async () => {
     if (!form.profissao.trim()) return toast.error('Informe a profissão');
-    if (!clienteHora || clienteHora <= 0) return toast.error('Informe um valor por hora válido');
+    if (!clienteHora || clienteHora <= 0) return toast.error(isVisita ? 'Informe o valor da visita' : 'Informe um valor por hora válido');
     if (isNaN(coopHora) || coopHora < 0)  return toast.error('Informe um valor de repasse válido');
     if (coopMaior) return toast.error('Repasse não pode ser maior que o valor do cliente');
-    if (!horasNum || horasNum <= 0) return toast.error('Informe a quantidade de horas');
+    if (!isVisita && (!horasNum || horasNum <= 0)) return toast.error('Informe a quantidade de horas');
     const taxaAdmStr = form.taxa_administrativa_cades.trim();
     const taxaAdm = taxaAdmStr ? parseFloat(taxaAdmStr.replace(',', '.')) : null;
     if (taxaAdmStr && (taxaAdm === null || isNaN(taxaAdm) || taxaAdm < 0 || taxaAdm > 100)) {
@@ -238,22 +239,29 @@ export default function TabelaValores() {
             </SelectContent>
           </Select>
         </div>
-        <div>
-          <Label>Quantidade de horas do plantão</Label>
-          <Input
-            value={form.horas}
-            onChange={e => setForm(f => ({ ...f, horas: e.target.value }))}
-            placeholder="12"
-          />
-        </div>
+        {!isVisita && (
+          <div>
+            <Label>Quantidade de horas do plantão</Label>
+            <Input
+              value={form.horas}
+              onChange={e => setForm(f => ({ ...f, horas: e.target.value }))}
+              placeholder="12"
+            />
+          </div>
+        )}
       </div>
+      {isVisita && (
+        <p className="text-xs text-muted-foreground -mt-1">
+          Visita não é calculada por hora — o valor abaixo é o valor integral da visita, lançado direto ao cooperado.
+        </p>
+      )}
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <Label>Valor/hora — Cliente (R$)</Label>
+          <Label>{isVisita ? 'Valor da Visita — Cliente (R$)' : 'Valor/hora — Cliente (R$)'}</Label>
           <Input value={form.valor_hora_cliente} onChange={e => setForm(f => ({ ...f, valor_hora_cliente: e.target.value }))} placeholder="50,00" />
         </div>
         <div>
-          <Label>Valor/hora — Cooperado (R$)</Label>
+          <Label>{isVisita ? 'Valor da Visita — Cooperado (R$)' : 'Valor/hora — Cooperado (R$)'}</Label>
           <Input value={form.valor_hora_cooperado} onChange={e => setForm(f => ({ ...f, valor_hora_cooperado: e.target.value }))} placeholder="35,00" />
         </div>
       </div>
@@ -269,7 +277,7 @@ export default function TabelaValores() {
         </p>
       </div>
       {/* Preview valor bruto */}
-      {(prevBrutoCliente !== null || prevBrutoCoop !== null) && (
+      {!isVisita && (prevBrutoCliente !== null || prevBrutoCoop !== null) && (
         <div className="rounded-md bg-muted/40 px-3 py-2 text-xs grid grid-cols-2 gap-2">
           {prevBrutoCliente !== null && (
             <div><span className="text-muted-foreground">Valor bruto Cliente: </span><span className="font-semibold tabular-nums">{formatCurrency(prevBrutoCliente)}</span></div>
