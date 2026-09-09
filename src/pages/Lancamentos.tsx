@@ -153,8 +153,8 @@ function LancRow({ r, fechado, canDelete, onDelete, onEdit, checked, onCheck }: 
         <div>{r.hospitals?.nome ?? '—'}</div>
         <div className="text-xs text-muted-foreground">{r.sectors?.nome ?? '—'}</div>
       </td>
-      <td className="p-3 tabular-nums text-xs">{r.horario_inicio?.slice(0,5)}–{r.horario_fim?.slice(0,5)}</td>
-      <td className="p-3 text-right tabular-nums">{Number(r.total_horas).toFixed(2)}h</td>
+      <td className="p-3 tabular-nums text-xs">{Number(r.total_horas) > 0 ? `${r.horario_inicio?.slice(0,5)}–${r.horario_fim?.slice(0,5)}` : '-'}</td>
+      <td className="p-3 text-right tabular-nums">{Number(r.total_horas) > 0 ? `${Number(r.total_horas).toFixed(2)}h` : '-'}</td>
       <td className="p-3 text-xs">{tipoPlantaoLabel[r.tipo_plantao]}</td>
       <td className="p-3 text-right tabular-nums font-medium">{formatCurrency(r.valor_cobrado_cliente)}</td>
       <td className="p-3 text-right tabular-nums text-accent">{formatCurrency(r.valor_repasse_cooperado)}</td>

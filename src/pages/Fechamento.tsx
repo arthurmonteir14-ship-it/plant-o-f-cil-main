@@ -196,7 +196,7 @@ function gerarPDFFechamento(rows: LancRow[], periodoLabel: string, aba: 'cobranc
         profissaoLabel[r.profissao] ?? r.profissao,
         r.sectors?.nome ?? '—',
         tipoPlantaoLabel[r.tipo_plantao] ?? r.tipo_plantao,
-        Number(r.total_horas).toFixed(2) + 'h',
+        Number(r.total_horas) > 0 ? Number(r.total_horas).toFixed(2) + 'h' : '-',
         fmt(Number(r[valorKey as keyof LancRow] as number)),
       ]),
       foot: [[{ content: `Subtotal ${nome}`, colSpan: 5, styles: { halign: 'right' } }, fmt(sub)]],
@@ -359,7 +359,7 @@ async function gerarPDFRPA(cooperado: Cooperado, lancamentos: LancRow[], periodo
     body: lancamentos.map(r => [
       fmtDate(r.data_plantao), r.sectors?.nome ?? '—', r.hospitals?.nome ?? '—',
       tipoPlantaoLabel[r.tipo_plantao] ?? r.tipo_plantao,
-      Number(r.total_horas).toFixed(2) + 'h', fmt(Number(r.valor_repasse_cooperado)),
+      Number(r.total_horas) > 0 ? Number(r.total_horas).toFixed(2) + 'h' : '-', fmt(Number(r.valor_repasse_cooperado)),
     ]),
     foot: [[
       { content: `${lancamentos.length} plantões`, styles: { halign: 'left' } }, '', '', '',
