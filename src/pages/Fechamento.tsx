@@ -190,15 +190,16 @@ function gerarPDFFechamento(rows: LancRow[], periodoLabel: string, aba: 'cobranc
 
     autoTable(doc, {
       startY,
-      head: [['Data', 'Setor', 'Tipo', 'Horas', aba === 'cobranca' ? 'Valor Cliente' : 'Valor Cooperado']],
+      head: [['Data', 'Categoria', 'Setor', 'Tipo', 'Horas', aba === 'cobranca' ? 'Valor Cliente' : 'Valor Cooperado']],
       body: lancs.map(r => [
         fmtDate(r.data_plantao),
+        profissaoLabel[r.profissao] ?? r.profissao,
         r.sectors?.nome ?? '—',
         tipoPlantaoLabel[r.tipo_plantao] ?? r.tipo_plantao,
         Number(r.total_horas).toFixed(2) + 'h',
         fmt(Number(r[valorKey as keyof LancRow] as number)),
       ]),
-      foot: [[{ content: `Subtotal ${nome}`, colSpan: 4, styles: { halign: 'right' } }, fmt(sub)]],
+      foot: [[{ content: `Subtotal ${nome}`, colSpan: 5, styles: { halign: 'right' } }, fmt(sub)]],
       styles: { fontSize: 8, cellPadding: 2.5 },
       headStyles: { fillColor: [31, 41, 99], textColor: 255, fontStyle: 'bold' },
       footStyles: { fillColor: [240, 242, 255], textColor: [31, 41, 99], fontStyle: 'bold' },
