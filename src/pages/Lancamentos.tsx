@@ -207,6 +207,7 @@ export default function Lancamentos() {
   const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
   const [bulkEditForm, setBulkEditForm] = useState({ hospital_id: '', setor_id: '', horario_inicio: '', horario_fim: '', tipo_plantao: '' });
   const [bulkOriginal, setBulkOriginal] = useState({ hospital_id: '', setor_id: '', horario_inicio: '', horario_fim: '', tipo_plantao: '' });
+  const [bulkRemoverHorario, setBulkRemoverHorario] = useState(false);
   const [bulkSaving, setBulkSaving] = useState(false);
   const [bulkErrors, setBulkErrors] = useState<{ label: string; erro: string }[]>([]);
 
@@ -340,11 +341,16 @@ export default function Lancamentos() {
 
   const salvarEdicao = async () => {
     if (!editTarget) return;
-    const { hospital_id, setor_id, data_plantao, horario_inicio, horario_fim, tipo_plantao } = editForm;
-    if (!hospital_id || !setor_id || !data_plantao || !horario_inicio || !horario_fim || !tipo_plantao)
+    const { hospital_id, setor_id, data_plantao, tipo_plantao } = editForm;
+    const isVisitaEdit = tipo_plantao === 'visita';
+    if (!hospital_id || !setor_id || !data_plantao || !tipo_plantao || (!isVisitaEdit && (!editForm.horario_inicio || !editForm.horario_fim)))
       return toast.error('Preencha todos os campos');
-    const total_horas = calcularHoras(horario_inicio, horario_fim);
-    if (total_horas <= 0) return toast.error('Horário inválido');
+    // Visita não exige horário — se ficou em branco, usa um horário padrão só pra satisfazer o
+    // banco (não afeta o valor, que já é integral) e marca 0h pra aparecer como "-" nos relatórios.
+    const horario_inicio = editForm.horario_inicio || (isVisitaEdit ? '08:00' : '');
+    const horario_fim = editForm.horario_fim || (isVisitaEdit ? '09:00' : '');
+    const total_horas = (isVisitaEdit && (!editForm.horario_inicio || !editForm.horario_fim)) ? 0 : calcularHoras(horario_inicio, horario_fim);
+    if (!isVisitaEdit && total_horas <= 0) return toast.error('Horário inválido');
 
     setSaving(true);
     // Buscar valores da tabela se hospital ou tipo mudou
@@ -428,6 +434,7 @@ export default function Lancamentos() {
     };
     setBulkEditForm(snapshot);
     setBulkOriginal(snapshot);
+    setBulkRemoverHorario(false);
     setBulkEditOpen(true);
   };
 
@@ -438,17 +445,20 @@ export default function Lancamentos() {
     const f = bulkEditForm;
     const o = bulkOriginal;
     const campos: { label: string; valor: string }[] = [];
-    if (f.horario_inicio && f.horario_fim && (f.horario_inicio !== o.horario_inicio || f.horario_fim !== o.horario_fim))
+    if (bulkRemoverHorario) {
+      campos.push({ label: 'Horário', valor: 'será removido (só válido para Visita)' });
+    } else if (f.horario_inicio && f.horario_fim && (f.horario_inicio !== o.horario_inicio || f.horario_fim !== o.horario_fim)) {
       campos.push({ label: 'Horário', valor: `${f.horario_inicio}–${f.horario_fim}` });
+    }
     if (f.tipo_plantao && f.tipo_plantao !== o.tipo_plantao) campos.push({ label: 'Tipo de plantão', valor: tipoPlantaoLabel[f.tipo_plantao] ?? f.tipo_plantao });
     if (f.hospital_id && f.hospital_id !== o.hospital_id) campos.push({ label: 'Cliente', valor: hospitals.find(h => h.id === f.hospital_id)?.nome ?? '—' });
     if (f.setor_id && f.setor_id !== o.setor_id) campos.push({ label: 'Setor', valor: sectors.find(s => s.id === f.setor_id)?.nome ?? '—' });
     return campos;
-  }, [bulkEditForm, bulkOriginal, hospitals, sectors]);
+  }, [bulkEditForm, bulkOriginal, bulkRemoverHorario, hospitals, sectors]);
 
   const abrirConfirmacaoBulk = () => {
     const f = bulkEditForm;
-    if ((f.horario_inicio && !f.horario_fim) || (!f.horario_inicio && f.horario_fim))
+    if (!bulkRemoverHorario && ((f.horario_inicio && !f.horario_fim) || (!f.horario_inicio && f.horario_fim)))
       return toast.error('Preencha os dois horários (início e fim) ou deixe ambos em branco');
     if (bulkResumoConfirmacao.length === 0)
       return toast.error('Altere ao menos um campo para aplicar em massa');
@@ -474,14 +484,24 @@ export default function Lancamentos() {
         if (setorEscolhido) hospital_id = setorEscolhido.hospital_id;
       }
       const data_plantao = r.data_plantao;
-      const horario_inicio = f.horario_inicio || r.horario_inicio.slice(0, 5);
-      const horario_fim = f.horario_fim || r.horario_fim.slice(0, 5);
       const tipo_plantao = f.tipo_plantao || r.tipo_plantao;
 
       if (!hospital_id || !setor_id) { erros.push({ label, erro: 'Cliente/setor inválido' }); continue; }
 
-      const total_horas = calcularHoras(horario_inicio, horario_fim);
-      if (total_horas <= 0) { erros.push({ label, erro: 'Horário inválido' }); continue; }
+      let horario_inicio: string;
+      let horario_fim: string;
+      let total_horas: number;
+      if (bulkRemoverHorario) {
+        if (tipo_plantao !== 'visita') { erros.push({ label, erro: 'Não é Visita — horário não pode ser removido' }); continue; }
+        horario_inicio = '08:00';
+        horario_fim = '09:00';
+        total_horas = 0;
+      } else {
+        horario_inicio = f.horario_inicio || r.horario_inicio.slice(0, 5);
+        horario_fim = f.horario_fim || r.horario_fim.slice(0, 5);
+        total_horas = calcularHoras(horario_inicio, horario_fim);
+        if (total_horas <= 0) { erros.push({ label, erro: 'Horário inválido' }); continue; }
+      }
 
       const hospitalMudou = hospital_id !== r.hospitals?.id;
       const tipoMudou = tipo_plantao !== r.tipo_plantao;
@@ -1020,16 +1040,22 @@ export default function Lancamentos() {
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <Label className="text-xs">Horário início</Label>
+                <Label className="text-xs">Horário início{editForm.tipo_plantao === 'visita' && <span className="ml-1 font-normal text-muted-foreground">(opcional)</span>}</Label>
                 <Input type="time" value={editForm.horario_inicio}
                   onChange={e => setEditForm(p => ({ ...p, horario_inicio: e.target.value }))} />
               </div>
               <div>
-                <Label className="text-xs">Horário fim</Label>
+                <Label className="text-xs">Horário fim{editForm.tipo_plantao === 'visita' && <span className="ml-1 font-normal text-muted-foreground">(opcional)</span>}</Label>
                 <Input type="time" value={editForm.horario_fim}
                   onChange={e => setEditForm(p => ({ ...p, horario_fim: e.target.value }))} />
               </div>
             </div>
+            {editForm.tipo_plantao === 'visita' && (
+              <button type="button" className="text-xs text-primary underline underline-offset-2"
+                onClick={() => setEditForm(p => ({ ...p, horario_inicio: '', horario_fim: '' }))}>
+                Remover horário
+              </button>
+            )}
             <div>
               <Label className="text-xs">Tipo de plantão</Label>
               <Select value={editForm.tipo_plantao} onValueChange={v => setEditForm(p => ({ ...p, tipo_plantao: v }))}>
@@ -1087,15 +1113,19 @@ export default function Lancamentos() {
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <Label className="text-xs">Horário início</Label>
-                <Input type="time" value={bulkEditForm.horario_inicio}
+                <Input type="time" value={bulkEditForm.horario_inicio} disabled={bulkRemoverHorario}
                   onChange={e => setBulkEditForm(p => ({ ...p, horario_inicio: e.target.value }))} />
               </div>
               <div>
                 <Label className="text-xs">Horário fim</Label>
-                <Input type="time" value={bulkEditForm.horario_fim}
+                <Input type="time" value={bulkEditForm.horario_fim} disabled={bulkRemoverHorario}
                   onChange={e => setBulkEditForm(p => ({ ...p, horario_fim: e.target.value }))} />
               </div>
             </div>
+            <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none">
+              <Checkbox checked={bulkRemoverHorario} onCheckedChange={v => setBulkRemoverHorario(!!v)} />
+              Remover horário (deixar sem hora) — só se aplica a plantões do tipo Visita
+            </label>
             <div>
               <Label className="text-xs">Tipo de plantão</Label>
               <Select value={bulkEditForm.tipo_plantao} onValueChange={v => setBulkEditForm(p => ({ ...p, tipo_plantao: v }))}>
