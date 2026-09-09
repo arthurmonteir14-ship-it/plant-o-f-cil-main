@@ -522,7 +522,7 @@ export default function NovoLancamento() {
             )}
 
             <Button type="submit" className="w-full mt-4"
-              disabled={submitting || !valorAplicavel || totalHoras <= 0 || datasPlantao.length === 0}>
+              disabled={submitting || !valorAplicavel || (!valorIntegral && totalHoras <= 0) || datasPlantao.length === 0}>
               {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               {datasPlantao.length > 1 ? `Criar ${datasPlantao.length} lançamentos` : 'Registrar plantão'}
             </Button>
