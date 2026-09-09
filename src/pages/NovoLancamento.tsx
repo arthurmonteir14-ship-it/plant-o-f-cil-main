@@ -56,14 +56,21 @@ function diasDoMesPorParidade(mes: Date, paridade: 'impar' | 'par'): Date[] {
   return dias;
 }
 
+const HORARIO_REGEX = /^\d{2}:\d{2}$/;
+
 const schema = z.object({
   cooperado_id: z.string().uuid('Selecione um cooperado'),
   hospital_id: z.string().uuid('Selecione um hospital'),
   setor_id: z.string().uuid('Selecione um setor'),
-  horario_inicio: z.string().regex(/^\d{2}:\d{2}$/, 'Horário inválido'),
-  horario_fim: z.string().regex(/^\d{2}:\d{2}$/, 'Horário inválido'),
+  // Visita não exige horário — os demais tipos continuam validados abaixo.
+  horario_inicio: z.string(),
+  horario_fim: z.string(),
   tipo_plantao: z.enum(['normal', 'extra', 'diarista', 'visita']),
   observacao: z.string().max(500).optional(),
+}).superRefine((data, ctx) => {
+  if (data.tipo_plantao === 'visita') return;
+  if (!HORARIO_REGEX.test(data.horario_inicio)) ctx.addIssue({ code: 'custom', path: ['horario_inicio'], message: 'Horário inválido' });
+  if (!HORARIO_REGEX.test(data.horario_fim)) ctx.addIssue({ code: 'custom', path: ['horario_fim'], message: 'Horário inválido' });
 });
 
 export default function NovoLancamento() {
@@ -102,7 +109,10 @@ export default function NovoLancamento() {
   }, []);
 
   const setTipoPlantao = (tipo: 'normal' | 'extra' | 'diarista' | 'visita') =>
-    setForm(f => ({ ...f, tipo_plantao: tipo, ...HORARIOS[tipo] }));
+    setForm(f => ({
+      ...f, tipo_plantao: tipo,
+      ...(tipo === 'visita' ? { horario_inicio: '', horario_fim: '' } : HORARIOS[tipo]),
+    }));
 
   const cooperadoSelecionado = cooperados.find(c => c.id === form.cooperado_id);
   const setoresDoHospital = sectors.filter(s => s.hospital_id === form.hospital_id);
@@ -160,7 +170,7 @@ export default function NovoLancamento() {
     const parsed = schema.safeParse(form);
     if (!parsed.success) { toast.error(parsed.error.errors[0].message); return; }
     if (datasPlantao.length === 0) { toast.error('Selecione ao menos uma data'); return; }
-    if (totalHoras <= 0) { toast.error('Total de horas deve ser maior que zero'); return; }
+    if (!valorIntegral && totalHoras <= 0) { toast.error('Total de horas deve ser maior que zero'); return; }
     if (!valorAplicavel) { toast.error('Sem tabela de valores para essa combinação'); return; }
     if (!cooperadoSelecionado) return;
 
@@ -202,14 +212,20 @@ export default function NovoLancamento() {
       }
     }
 
+    // Visita não exige horário — se ficou em branco, grava um horário padrão só pra satisfazer
+    // o banco (não afeta o valor, que já é integral, não calculado por hora).
+    const horarioInicioFinal = HORARIO_REGEX.test(form.horario_inicio) ? form.horario_inicio : HORARIOS.visita.inicio;
+    const horarioFimFinal = HORARIO_REGEX.test(form.horario_fim) ? form.horario_fim : HORARIOS.visita.fim;
+    const totalHorasFinal = valorIntegral && totalHoras <= 0 ? 0 : totalHoras;
+
     const inserts = datasPlantao.map(data => ({
       cooperado_id: form.cooperado_id,
       hospital_id: form.hospital_id,
       setor_id: form.setor_id,
       data_plantao: format(data, 'yyyy-MM-dd'),
-      horario_inicio: form.horario_inicio,
-      horario_fim: form.horario_fim,
-      total_horas: totalHoras,
+      horario_inicio: horarioInicioFinal,
+      horario_fim: horarioFimFinal,
+      total_horas: totalHorasFinal,
       profissao: cooperadoSelecionado.profissao as 'enfermeiro' | 'tecnico_enfermagem' | 'fonoaudiologo' | 'assistente_social',
       tipo_plantao: form.tipo_plantao,
       valor_hora_cliente: valorHoraCliente,
@@ -443,14 +459,19 @@ export default function NovoLancamento() {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <Label>Início</Label>
+                  <Label>Início{valorIntegral && <span className="ml-1 font-normal text-muted-foreground">(opcional)</span>}</Label>
                   <Input type="time" value={form.horario_inicio} onChange={e => setForm(f => ({ ...f, horario_inicio: e.target.value }))} />
                 </div>
                 <div>
-                  <Label>Fim</Label>
+                  <Label>Fim{valorIntegral && <span className="ml-1 font-normal text-muted-foreground">(opcional)</span>}</Label>
                   <Input type="time" value={form.horario_fim} onChange={e => setForm(f => ({ ...f, horario_fim: e.target.value }))} />
                 </div>
               </div>
+              {valorIntegral && (
+                <p className="text-xs text-muted-foreground -mt-1">
+                  Visita não é calculada por hora — preencha o horário só se quiser registrar.
+                </p>
+              )}
             </div>
 
             <div>
