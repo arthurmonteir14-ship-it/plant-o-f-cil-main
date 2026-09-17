@@ -930,6 +930,9 @@ function AbaRPA({ rows, hospitals, sectors, cooperados, periodoLabel, periodoIni
   const nomeCliente = filterHospital !== 'all'
     ? (hospitals.find(h => h.id === filterHospital)?.nome ?? '')
     : '';
+  const nomeSetor = filterSetor !== 'all'
+    ? (sectors.find(s => s.id === filterSetor)?.nome ?? '')
+    : '';
 
   const gerarDemonstrativoPDF = async () => {
     const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
@@ -1116,7 +1119,12 @@ function AbaRPA({ rows, hospitals, sectors, cooperados, periodoLabel, periodoIni
     doc.text(`${filtered.length} cooperados · ${periodoLabel}`, W - MR, H - 3.5, { align: 'right' });
 
     const slug = (s: string) => s.replace(/[^a-zA-Z0-9]/g, '_');
-    doc.save(`Demonstrativo_Pagamento_${slug(periodoLabel)}.pdf`);
+    const nomeArquivo = nomeSetor
+      ? `${slug(nomeSetor)}_${slug(periodoLabel)}`
+      : nomeCliente
+        ? `${slug(nomeCliente)}_${slug(periodoLabel)}`
+        : `Demonstrativo_Pagamento_${slug(periodoLabel)}`;
+    doc.save(`${nomeArquivo}.pdf`);
   };
 
   const rowsFiltrados = useMemo(() => rows.filter(r => {
