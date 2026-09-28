@@ -303,10 +303,10 @@ export default function Dashboard() {
                     </div>
                   </div>
 
-                  {/* Cota parte por projeto/cliente */}
+                  {/* Valor faturado por projeto/cliente */}
                   <div>
-                    <p className="text-sm font-semibold mb-2">Cota Parte por Projeto (Cliente)</p>
-                    {dadosCotaParteRpc.length === 0 ? (
+                    <p className="text-sm font-semibold mb-2">Valor Faturado por Projeto (Cliente)</p>
+                    {dadosPorClienteRpc.length === 0 ? (
                       <p className="text-sm text-muted-foreground py-4">Sem dados no período.</p>
                     ) : (
                       <div className="overflow-x-auto">
@@ -314,32 +314,28 @@ export default function Dashboard() {
                           <thead className="text-xs uppercase tracking-wider text-muted-foreground border-b">
                             <tr>
                               <th className="text-left py-2 font-medium">Projeto / Cliente</th>
-                              <th className="text-right py-2 font-medium">Cooperados</th>
-                              <th className="text-right py-2 font-medium">Cota Parte</th>
+                              <th className="text-right py-2 font-medium">Valor Faturado</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y">
-                            {dadosCotaParteRpc.map(r => (
+                            {dadosPorClienteRpc.map(r => (
                               <tr key={r.hospital_id} className="hover:bg-muted/40">
                                 <td className="py-2">{r.nome}</td>
-                                <td className="py-2 text-right tabular-nums">{r.cooperados}</td>
-                                <td className="py-2 text-right tabular-nums font-medium">{formatCurrency(Number(r.cota_parte))}</td>
+                                <td className="py-2 text-right tabular-nums font-medium">{formatCurrency(Number(r.faturamento))}</td>
                               </tr>
                             ))}
                           </tbody>
                           <tfoot>
                             <tr className="border-t font-bold">
                               <td className="py-2">Total</td>
-                              <td></td>
-                              <td className="py-2 text-right tabular-nums">{formatCurrency(totalCotaPartePeriodo)}</td>
+                              <td className="py-2 text-right tabular-nums">
+                                {formatCurrency(dadosPorClienteRpc.reduce((s, r) => s + Number(r.faturamento), 0))}
+                              </td>
                             </tr>
                           </tfoot>
                         </table>
                       </div>
                     )}
-                    <p className="text-xs text-muted-foreground mt-2">
-                      Cota parte estimada em R$80 por cooperado distinto que atendeu o cliente no período (não é cobrada do cliente, é retida do repasse do cooperado). Se um cooperado atendeu mais de um cliente no mesmo período, ele é contado em cada um.
-                    </p>
                   </div>
                 </>
               )}

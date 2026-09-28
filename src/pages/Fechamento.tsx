@@ -117,7 +117,7 @@ function formatarCPF(cpf: string | null | undefined): string {
 
 // ─── PDF Fechamento (existente) ───────────────────────────────────────────────
 
-function gerarPDFFechamento(rows: LancRow[], periodoLabel: string, aba: 'cobranca' | 'repasse', grupoNome: string, hospitals: Hospital[] = [], mostrarTaxaAdm = false) {
+async function gerarPDFFechamento(rows: LancRow[], periodoLabel: string, aba: 'cobranca' | 'repasse', grupoNome: string, hospitals: Hospital[] = [], mostrarTaxaAdm = false) {
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
   const W = doc.internal.pageSize.getWidth();
   const titulo = aba === 'cobranca' ? 'Cobrança ao Cliente' : 'Repasse ao Cooperado';
@@ -126,15 +126,39 @@ function gerarPDFFechamento(rows: LancRow[], periodoLabel: string, aba: 'cobranc
   const incluirTaxaAdm = aba === 'cobranca' && mostrarTaxaAdm;
   const taxaDaRow = (r: LancRow) => Number(r.valor_cobrado_cliente) * (taxaPorHospital.get(r.hospitals?.id ?? '') ?? 0) / 100;
 
+  let logoDataUrl: string | null = null;
+  if (aba === 'cobranca') {
+    try {
+      const resp = await fetch('/cades-logo-dark.png');
+      const blob = await resp.blob();
+      logoDataUrl = await new Promise<string>(res => {
+        const reader = new FileReader();
+        reader.onloadend = () => res(reader.result as string);
+        reader.readAsDataURL(blob);
+      });
+    } catch { /* logo opcional */ }
+  }
+
+  const headerH = logoDataUrl ? 30 : 26;
   doc.setFillColor(31, 41, 99);
-  doc.rect(0, 0, W, 26, 'F');
+  doc.rect(0, 0, W, headerH, 'F');
   doc.setTextColor(255, 255, 255);
-  doc.setFontSize(16); doc.setFont('helvetica', 'bold');
-  doc.text('CADES Financeiro', 14, 11);
-  doc.setFontSize(9); doc.setFont('helvetica', 'normal');
-  doc.text(`${titulo} — ${periodoLabel}`, 14, 18);
-  if (grupoNome) doc.text(grupoNome, 14, 23.5);
-  doc.text(new Date().toLocaleDateString('pt-BR'), W - 14, 18, { align: 'right' });
+  if (logoDataUrl) {
+    const logoH = 20; const logoW = logoH * (1032 / 369);
+    doc.addImage(logoDataUrl, 'PNG', 14, (headerH - logoH) / 2, logoW, logoH);
+    const textX = 14 + logoW + 8;
+    doc.setFontSize(9); doc.setFont('helvetica', 'normal');
+    doc.text(`${titulo} — ${periodoLabel}`, textX, headerH / 2 - 1);
+    if (grupoNome) doc.text(grupoNome, textX, headerH / 2 + 4.5);
+    doc.text(new Date().toLocaleDateString('pt-BR'), W - 14, headerH / 2 - 1, { align: 'right' });
+  } else {
+    doc.setFontSize(16); doc.setFont('helvetica', 'bold');
+    doc.text('CADES Financeiro', 14, 11);
+    doc.setFontSize(9); doc.setFont('helvetica', 'normal');
+    doc.text(`${titulo} — ${periodoLabel}`, 14, 18);
+    if (grupoNome) doc.text(grupoNome, 14, 23.5);
+    doc.text(new Date().toLocaleDateString('pt-BR'), W - 14, 18, { align: 'right' });
+  }
 
   const totalHoras = rows.reduce((s, r) => s + Number(r.total_horas), 0);
   const totalValor = rows.reduce((s, r) => s + Number(r[valorKey as keyof LancRow] as number), 0);
@@ -158,14 +182,15 @@ function gerarPDFFechamento(rows: LancRow[], periodoLabel: string, aba: 'cobranc
         { label: 'Total a repassar', value: fmt(totalValor) },
       ];
   const kpiW = (W - 28) / kpis.length;
+  const kpiTop = headerH + 4;
   kpis.forEach((k, i) => {
     const x = 14 + i * kpiW;
     doc.setFillColor(248, 249, 252);
-    doc.roundedRect(x, 30, kpiW - 3, 16, 2, 2, 'F');
+    doc.roundedRect(x, kpiTop, kpiW - 3, 16, 2, 2, 'F');
     doc.setTextColor(100, 110, 130); doc.setFontSize(7); doc.setFont('helvetica', 'normal');
-    doc.text(k.label.toUpperCase(), x + 4, 36);
+    doc.text(k.label.toUpperCase(), x + 4, kpiTop + 6);
     doc.setTextColor(31, 41, 99); doc.setFontSize(10); doc.setFont('helvetica', 'bold');
-    doc.text(k.value, x + 4, 43);
+    doc.text(k.value, x + 4, kpiTop + 13);
   });
 
   const byGroup: Record<string, LancRow[]> = {};
@@ -177,7 +202,7 @@ function gerarPDFFechamento(rows: LancRow[], periodoLabel: string, aba: 'cobranc
     byGroup[k].push(r);
   });
 
-  let startY = 52;
+  let startY = headerH + 26;
   Object.entries(byGroup).sort((a, b) => a[0].localeCompare(b[0])).forEach(([nome, lancs]) => {
     const sub = lancs.reduce((s, r) => s + Number(r[valorKey as keyof LancRow] as number), 0);
     const horas = lancs.reduce((s, r) => s + Number(r.total_horas), 0);
@@ -1586,7 +1611,7 @@ function AbaCobranca({ rows, hospitals, sectors, cooperados, periodoLabel, compe
           Incluir taxa administrativa no PDF
         </label>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" className="gap-2" onClick={() => gerarPDFFechamento(filtered, periodoLabel, 'cobranca', grupoNome, hospitals, mostrarTaxaPdf)}><FileText className="h-4 w-4" /> PDF</Button>
+          <Button variant="outline" size="sm" className="gap-2" onClick={() => { void gerarPDFFechamento(filtered, periodoLabel, 'cobranca', grupoNome, hospitals, mostrarTaxaPdf); }}><FileText className="h-4 w-4" /> PDF</Button>
           <Button variant="outline" size="sm" className="gap-2" onClick={() => exportarRelatorioExcel(filtered as any, 'cobranca', periodoLabel, grupoNome, filterCooperado !== 'all' ? filterCooperado : undefined)}><Download className="h-4 w-4" /> Excel</Button>
           <Button variant="outline" size="sm" className="gap-2" onClick={() => exportCSV(filtered, 'cobranca', periodoLabel)}><Download className="h-4 w-4" /> CSV</Button>
         </div>
@@ -1655,7 +1680,7 @@ function AbaRepasse({ rows, hospitals, sectors, cooperados, periodoLabel, compet
         ))}
       </div>
       {filtered.length > 0 && <div className="flex gap-2 justify-end">
-        <Button variant="outline" size="sm" className="gap-2" onClick={() => gerarPDFFechamento(filtered, periodoLabel, 'repasse', coopNome)}><FileText className="h-4 w-4" /> PDF</Button>
+        <Button variant="outline" size="sm" className="gap-2" onClick={() => { void gerarPDFFechamento(filtered, periodoLabel, 'repasse', coopNome); }}><FileText className="h-4 w-4" /> PDF</Button>
         <Button variant="outline" size="sm" className="gap-2" onClick={() => exportarRelatorioExcel(filtered as any, 'repasse', periodoLabel, coopNome, filterCooperado !== 'all' ? filterCooperado : undefined)}><Download className="h-4 w-4" /> Excel</Button>
         <Button variant="outline" size="sm" className="gap-2" onClick={() => exportCSV(filtered, 'repasse', periodoLabel)}><Download className="h-4 w-4" /> CSV</Button>
       </div>}

@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Download, Eye, EyeOff, FileBarChart2, FileText, TrendingUp, Users, Lock } from 'lucide-react';
+import { Download, Eye, EyeOff, FileBarChart2, FileText, TrendingUp, Users, Lock, ClipboardList } from 'lucide-react';
 import { toast } from 'sonner';
 import { formatCurrency, profissaoLabel, tipoPlantaoLabel } from '@/lib/format';
 import { PeriodoPicker } from '@/components/PeriodoPicker';
@@ -23,9 +23,9 @@ interface AggRow {
 }
 interface Hospital { id: string; nome: string; }
 interface Sector { id: string; nome: string; hospital_id: string; }
-interface Cooperado { id: string; nome: string; }
+interface Cooperado { id: string; nome: string; cpf: string | null; }
 
-type TipoRelatorio = 'faturamento' | 'repasse';
+type TipoRelatorio = 'faturamento' | 'repasse' | 'cooperados_setor';
 type Ordenacao = 'nome' | 'valor';
 
 const PROF_COLORS: Record<string, string> = {
@@ -37,6 +37,60 @@ const PROF_COLORS: Record<string, string> = {
 
 const fmtBRL = (v: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v);
 const fmtData = (s: string) => s.split('-').reverse().join('/');
+const fmtCPF = (v: string | null | undefined) => {
+  const d = (v ?? '').replace(/\D/g, '');
+  return d.length === 11 ? d.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4') : (v ?? '—');
+};
+
+interface SetorCoopSimples { key: string; nome: string; cooperados: { key: string; nome: string; cpf: string; profissao: string }[]; }
+
+function downloadCSVCooperadosSetor(setores: SetorCoopSimples[]) {
+  const header = ['Setor', 'Nome completo', 'CPF', 'Categoria'];
+  const lines = setores.flatMap(s => s.cooperados.map(c => [
+    s.nome, c.nome, fmtCPF(c.cpf), profissaoLabel[c.profissao] ?? c.profissao,
+  ].map(v => `"${v}"`).join(';')));
+  const csv = [header.join(';'), ...lines].join('\n');
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = 'relatorio_cooperados_por_setor.csv'; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function gerarPDFCooperadosPorSetor(setores: SetorCoopSimples[], periodoLabel: string, filtros: Record<string, string>) {
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  gerarPDFHeader(doc, 'Relatório de Cooperados por Setor', periodoLabel, filtros);
+  let startY = 34;
+
+  setores.forEach(setor => {
+    if (startY > doc.internal.pageSize.getHeight() - 30) { doc.addPage(); startY = 14; }
+
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(9.5); doc.setTextColor(31, 41, 99);
+    doc.text(`Setor: ${setor.nome}`, 14, startY);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(80, 80, 80);
+    doc.text(`${setor.cooperados.length} cooperado${setor.cooperados.length !== 1 ? 's' : ''}`, 14, startY + 4);
+    startY += 9;
+
+    autoTable(doc, {
+      startY,
+      head: [['CPF', 'Nome completo', 'Categoria']],
+      body: setor.cooperados.map(c => [fmtCPF(c.cpf), c.nome, profissaoLabel[c.profissao] ?? c.profissao]),
+      styles: { fontSize: 8, cellPadding: 2.5 },
+      headStyles: { fillColor: [31, 41, 99], textColor: 255, fontStyle: 'bold' },
+      alternateRowStyles: { fillColor: [248, 249, 252] },
+      columnStyles: { 0: { cellWidth: 32 }, 1: { cellWidth: 100 }, 2: { cellWidth: 40 } },
+      margin: { left: 14, right: 14 },
+    });
+    startY = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
+  });
+
+  const totalUnicos = new Set(setores.flatMap(s => s.cooperados.map(c => c.key))).size;
+  if (startY > doc.internal.pageSize.getHeight() - 20) { doc.addPage(); startY = 14; }
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(31, 41, 99);
+  doc.text(`Total de cooperados únicos: ${totalUnicos}`, 14, startY);
+
+  gerarPDFFooter(doc);
+  doc.save(`cooperados_por_setor_${periodoLabel.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`);
+}
 
 function downloadCSVFaturamento(rows: AggRow[]) {
   const header = ['Cooperado', 'Profissão', 'Tipo', 'Cliente', 'Setor', 'Qtd', 'Horas', 'Valor Cliente'];
@@ -384,13 +438,15 @@ export default function Relatorios() {
   useEffect(() => {
     supabase.from('hospitals').select('id, nome').order('nome').then(({ data }) => setHospitals(data ?? []));
     supabase.from('sectors').select('id, nome, hospital_id').eq('ativo', true).order('nome').then(({ data }) => setSectors(data ?? []));
-    supabase.from('cooperados').select('id, nome').order('nome').then(({ data }) => setCooperadosList(data ?? []));
+    supabase.from('cooperados').select('id, nome, cpf').order('nome').then(({ data }) => setCooperadosList((data ?? []) as Cooperado[]));
   }, []);
 
   const setoresFiltrados = useMemo(
     () => filterHospital === 'all' ? sectors : sectors.filter(s => s.hospital_id === filterHospital),
     [sectors, filterHospital],
   );
+
+  const cpfMap = useMemo(() => new Map(cooperadosList.map(c => [c.id, c.cpf])), [cooperadosList]);
 
   const filtered = useMemo(() => rows.filter(r => {
     if (filterHospital !== 'all' && r.hospital_id !== filterHospital) return false;
@@ -460,7 +516,30 @@ export default function Relatorios() {
     }).sort((a, b) => a.nome.localeCompare(b.nome));
   }, [filtered, ordenacao]);
 
+  const setorCoopCards: SetorCoopSimples[] = useMemo(() => {
+    const map = new Map<string, { nome: string; coops: Map<string, { nome: string; profissao: string }> }>();
+    filtered.forEach(r => {
+      if (!map.has(r.setor_id)) map.set(r.setor_id, { nome: r.setor_nome, coops: new Map() });
+      const setor = map.get(r.setor_id)!;
+      if (!setor.coops.has(r.cooperado_id)) setor.coops.set(r.cooperado_id, { nome: r.cooperado_nome, profissao: r.profissao });
+    });
+    return [...map.entries()]
+      .map(([sId, setor]) => ({
+        key: sId,
+        nome: setor.nome,
+        cooperados: [...setor.coops.entries()]
+          .map(([cId, c]) => ({ key: cId, nome: c.nome, cpf: cpfMap.get(cId) ?? '', profissao: c.profissao }))
+          .sort((a, b) => a.nome.localeCompare(b.nome)),
+      }))
+      .sort((a, b) => a.nome.localeCompare(b.nome));
+  }, [filtered, cpfMap]);
+  const totalCooperadosUnicos = useMemo(
+    () => new Set(setorCoopCards.flatMap(s => s.cooperados.map(c => c.key))).size,
+    [setorCoopCards],
+  );
+
   const isFaturamento = tipoRelatorio === 'faturamento';
+  const isCooperadosSetor = tipoRelatorio === 'cooperados_setor';
   const getFiltrosNomes = () => ({
     cooperado: cooperadosList.find(c => c.id === filterCooperado)?.nome ?? '',
     hospital: hospitals.find(h => h.id === filterHospital)?.nome ?? '',
@@ -488,22 +567,28 @@ export default function Relatorios() {
         <div className="flex flex-col items-end gap-1.5">
           <div className="flex gap-2">
             <Button variant="outline" className="gap-2"
-              onClick={() => isFaturamento
-                ? gerarPDFFaturamento(filtered, periodoCalc.label, getFiltrosNomes(), mostrarValores, !ocultarHorasPDF)
-                : gerarPDFRepasse(filtered, periodoCalc.label, getFiltrosNomes(), mostrarValores, !ocultarHorasPDF)}
-              disabled={filtered.length === 0}>
+              onClick={() => isCooperadosSetor
+                ? gerarPDFCooperadosPorSetor(setorCoopCards, periodoCalc.label, getFiltrosNomes())
+                : isFaturamento
+                  ? gerarPDFFaturamento(filtered, periodoCalc.label, getFiltrosNomes(), mostrarValores, !ocultarHorasPDF)
+                  : gerarPDFRepasse(filtered, periodoCalc.label, getFiltrosNomes(), mostrarValores, !ocultarHorasPDF)}
+              disabled={isCooperadosSetor ? setorCoopCards.length === 0 : filtered.length === 0}>
               <FileText className="h-4 w-4" /> PDF
             </Button>
             <Button variant="outline" className="gap-2"
-              onClick={() => isFaturamento ? downloadCSVFaturamento(filtered) : downloadCSVRepasse(filtered)}
-              disabled={filtered.length === 0}>
+              onClick={() => isCooperadosSetor
+                ? downloadCSVCooperadosSetor(setorCoopCards)
+                : isFaturamento ? downloadCSVFaturamento(filtered) : downloadCSVRepasse(filtered)}
+              disabled={isCooperadosSetor ? setorCoopCards.length === 0 : filtered.length === 0}>
               <Download className="h-4 w-4" /> CSV
             </Button>
           </div>
-          <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
-            <Checkbox checked={ocultarHorasPDF} onCheckedChange={v => setOcultarHorasPDF(v === true)} />
-            Extrair PDF sem as horas
-          </label>
+          {!isCooperadosSetor && (
+            <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
+              <Checkbox checked={ocultarHorasPDF} onCheckedChange={v => setOcultarHorasPDF(v === true)} />
+              Extrair PDF sem as horas
+            </label>
+          )}
         </div>
       </div>
 
@@ -512,6 +597,7 @@ export default function Relatorios() {
         {([
           { key: 'faturamento', label: 'Faturamento', Icon: TrendingUp },
           { key: 'repasse', label: 'Repasse Cooperados', Icon: Users },
+          { key: 'cooperados_setor', label: 'Cooperados por Setor', Icon: ClipboardList },
         ] as const).map(({ key, label, Icon }) => (
           <button key={key} onClick={() => setTipoRelatorio(key)}
             className={`flex items-center gap-2 px-5 py-2.5 rounded-xl border text-sm font-medium transition-colors ${
@@ -584,23 +670,27 @@ export default function Relatorios() {
             </div>
           </div>
           <div className="flex items-center justify-between pt-1 border-t">
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-muted-foreground font-medium">Exibição de valores:</span>
-              <button
-                onClick={() => setMostrarValores(true)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${mostrarValores ? 'bg-primary text-primary-foreground border-primary' : 'bg-background text-muted-foreground border-border hover:bg-muted/50'}`}
-              >
-                <Eye className="h-3.5 w-3.5" /> Mostrar valores
-              </button>
-              <button
-                onClick={() => setMostrarValores(false)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${!mostrarValores ? 'bg-primary text-primary-foreground border-primary' : 'bg-background text-muted-foreground border-border hover:bg-muted/50'}`}
-              >
-                <EyeOff className="h-3.5 w-3.5" /> Ocultar valores
-              </button>
-            </div>
+            {isCooperadosSetor ? <div /> : (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground font-medium">Exibição de valores:</span>
+                <button
+                  onClick={() => setMostrarValores(true)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${mostrarValores ? 'bg-primary text-primary-foreground border-primary' : 'bg-background text-muted-foreground border-border hover:bg-muted/50'}`}
+                >
+                  <Eye className="h-3.5 w-3.5" /> Mostrar valores
+                </button>
+                <button
+                  onClick={() => setMostrarValores(false)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${!mostrarValores ? 'bg-primary text-primary-foreground border-primary' : 'bg-background text-muted-foreground border-border hover:bg-muted/50'}`}
+                >
+                  <EyeOff className="h-3.5 w-3.5" /> Ocultar valores
+                </button>
+              </div>
+            )}
             <div className="text-sm text-muted-foreground">
-              {loading ? 'Carregando…' : `${totalPlantoes} lançamento${totalPlantoes !== 1 ? 's' : ''}`}
+              {loading ? 'Carregando…' : isCooperadosSetor
+                ? `${totalCooperadosUnicos} cooperado${totalCooperadosUnicos !== 1 ? 's' : ''} único${totalCooperadosUnicos !== 1 ? 's' : ''}`
+                : `${totalPlantoes} lançamento${totalPlantoes !== 1 ? 's' : ''}`}
             </div>
           </div>
         </CardContent>
@@ -608,7 +698,13 @@ export default function Relatorios() {
 
       {/* ── KPIs ── */}
       <div className="grid gap-4 sm:grid-cols-4">
-        {kpis.map(k => (
+        {(isCooperadosSetor
+          ? [
+              { label: 'Setores', value: loading ? '—' : String(setorCoopCards.length) },
+              { label: 'Cooperados únicos', value: loading ? '—' : String(totalCooperadosUnicos), highlight: true },
+            ]
+          : kpis
+        ).map(k => (
           <Card key={k.label}>
             <CardContent className="p-5">
               <p className="text-xs uppercase tracking-wider text-muted-foreground">{k.label}</p>
@@ -623,6 +719,60 @@ export default function Relatorios() {
       {/* ── Conteúdo — consolidado por setor ── */}
       {loading ? (
         <div className="p-8 text-center text-sm text-muted-foreground">Carregando…</div>
+      ) : isCooperadosSetor ? (
+        setorCoopCards.length === 0 ? (
+          <Card>
+            <CardContent className="p-12 text-center">
+              <FileBarChart2 className="mx-auto h-10 w-10 text-muted-foreground mb-3" />
+              <p className="text-sm text-muted-foreground">Nenhum cooperado encontrado para o período e filtros selecionados.</p>
+            </CardContent>
+          </Card>
+        ) : (
+          <div className="space-y-4">
+            {setorCoopCards.map(setor => (
+              <Card key={setor.key} className="overflow-hidden">
+                <div className="flex items-center justify-between px-4 py-3 border-b bg-muted/40">
+                  <div>
+                    <p className="font-semibold text-[15px]">{setor.nome}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      {setor.cooperados.length} cooperado{setor.cooperados.length !== 1 ? 's' : ''}
+                    </p>
+                  </div>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="text-xs uppercase tracking-wider text-muted-foreground bg-muted/20">
+                      <tr>
+                        <th className="text-left p-3 font-medium">CPF</th>
+                        <th className="text-left p-3 font-medium">Nome completo</th>
+                        <th className="text-left p-3 font-medium">Categoria</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y">
+                      {setor.cooperados.map(c => (
+                        <tr key={c.key} className="hover:bg-muted/20">
+                          <td className="p-3 tabular-nums text-muted-foreground">{fmtCPF(c.cpf)}</td>
+                          <td className="p-3 font-medium">
+                            <span
+                              className="inline-block w-2 h-2 rounded-full mr-2 align-middle"
+                              style={{ background: PROF_COLORS[c.profissao] ?? '#999' }}
+                            />
+                            {c.nome}
+                          </td>
+                          <td className="p-3 text-xs text-muted-foreground">{profissaoLabel[c.profissao] ?? c.profissao}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+            ))}
+            <div className="flex items-center justify-between rounded-xl border bg-primary/5 px-5 py-4">
+              <span className="text-xs uppercase tracking-wider text-muted-foreground font-medium">Total de cooperados únicos</span>
+              <span className="text-xl font-bold tabular-nums text-primary">{totalCooperadosUnicos}</span>
+            </div>
+          </div>
+        )
       ) : filtered.length === 0 ? (
         <Card>
           <CardContent className="p-12 text-center">
