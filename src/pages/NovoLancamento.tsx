@@ -89,7 +89,8 @@ export default function NovoLancamento() {
     tipo_plantao: 'normal' | 'extra' | 'diarista' | 'visita'; observacao: string;
   }>({
     cooperado_id: '', hospital_id: '', setor_id: '',
-    ...HORARIOS.normal, tipo_plantao: 'normal', observacao: '',
+    horario_inicio: HORARIOS.normal.inicio, horario_fim: HORARIOS.normal.fim,
+    tipo_plantao: 'normal', observacao: '',
   });
 
   useEffect(() => {
@@ -117,7 +118,7 @@ export default function NovoLancamento() {
       ...f, tipo_plantao: tipo,
       ...(tipo === 'visita'
         ? { horario_inicio: '', horario_fim: '' }
-        : horarioEditadoManualmente ? {} : HORARIOS[tipo]),
+        : horarioEditadoManualmente ? {} : { horario_inicio: HORARIOS[tipo].inicio, horario_fim: HORARIOS[tipo].fim }),
     }));
 
   const cooperadoSelecionado = cooperados.find(c => c.id === form.cooperado_id);
