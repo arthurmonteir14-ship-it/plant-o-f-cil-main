@@ -108,10 +108,16 @@ export default function NovoLancamento() {
     })();
   }, []);
 
+  // Rastreia se o usuário já editou o horário manualmente, pra não sobrescrever
+  // a escolha dele quando ele trocar o Tipo de plantão depois.
+  const [horarioEditadoManualmente, setHorarioEditadoManualmente] = useState(false);
+
   const setTipoPlantao = (tipo: 'normal' | 'extra' | 'diarista' | 'visita') =>
     setForm(f => ({
       ...f, tipo_plantao: tipo,
-      ...(tipo === 'visita' ? { horario_inicio: '', horario_fim: '' } : HORARIOS[tipo]),
+      ...(tipo === 'visita'
+        ? { horario_inicio: '', horario_fim: '' }
+        : horarioEditadoManualmente ? {} : HORARIOS[tipo]),
     }));
 
   const cooperadoSelecionado = cooperados.find(c => c.id === form.cooperado_id);
@@ -460,11 +466,11 @@ export default function NovoLancamento() {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <Label>Início{valorIntegral && <span className="ml-1 font-normal text-muted-foreground">(opcional)</span>}</Label>
-                  <Input type="time" value={form.horario_inicio} onChange={e => setForm(f => ({ ...f, horario_inicio: e.target.value }))} />
+                  <Input type="time" value={form.horario_inicio} onChange={e => { setHorarioEditadoManualmente(true); setForm(f => ({ ...f, horario_inicio: e.target.value })); }} />
                 </div>
                 <div>
                   <Label>Fim{valorIntegral && <span className="ml-1 font-normal text-muted-foreground">(opcional)</span>}</Label>
-                  <Input type="time" value={form.horario_fim} onChange={e => setForm(f => ({ ...f, horario_fim: e.target.value }))} />
+                  <Input type="time" value={form.horario_fim} onChange={e => { setHorarioEditadoManualmente(true); setForm(f => ({ ...f, horario_fim: e.target.value })); }} />
                 </div>
               </div>
               {valorIntegral && (
